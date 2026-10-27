@@ -34,3 +34,7 @@ npm run test:e2e   # end-to-end
 ## CI
 
 GitHub Actions corre lint, build, tests unitarios y e2e en cada pull request (`.github/workflows/ci.yml`).
+
+## Base de datos (Supabase)
+
+El esquema vive en `supabase/migrations/`. Al hacer push a `main`, `.github/workflows/migrate.yml` corre `supabase db push --db-url "$SUPABASE_DB_URL"`. Requiere el secreto `SUPABASE_DB_URL` en el repo.

@@ -1,0 +1,10 @@
+# Configuración del CLI de Supabase (equivalente a `supabase init`).
+# Las migraciones se aplican a producción con .github/workflows/migrate.yml.
+project_id = "impulso_rededuca_g1_api"
+
+[db]
+port = 54322
+major_version = 17
+
+[db.migrations]
+enabled = true
