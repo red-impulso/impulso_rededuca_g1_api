@@ -38,3 +38,7 @@ GitHub Actions corre lint, build, tests unitarios y e2e en cada pull request (`.
 ## Base de datos (Supabase)
 
 El esquema vive en `supabase/migrations/`. Al hacer push a `main`, `.github/workflows/migrate.yml` corre `supabase db push --db-url "$SUPABASE_DB_URL"`. Requiere el secreto `SUPABASE_DB_URL` en el repo.
+
+## Autenticación
+
+Todas las rutas exigen `Authorization: Bearer <access_token de Supabase>` (AuthGuard global); solo `/` y `/health` son públicas (`@Public()`). `GET /me` devuelve el perfil y las membresías del usuario. Requiere `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (ver `.env.example`).
