@@ -58,3 +58,150 @@ describe('MeService', () => {
     await expect(svc.getMe('u1')).rejects.toBeInstanceOf(NotFoundException);
   });
 });
+
+const teacherMembership = {
+  id: 'mT',
+  userId: 'u1',
+  institutionId: 'i1',
+  role: 'teacher',
+} as const;
+
+const guardianMembership = {
+  id: 'mG',
+  userId: 'u2',
+  institutionId: 'i1',
+  role: 'guardian',
+} as const;
+
+describe('MeService · getMySubjects', () => {
+  it('devuelve las materias del docente con su curso', async () => {
+    const svc = service({
+      subjects: {
+        data: [
+          {
+            id: 's1',
+            name: 'Matemática',
+            courses: { id: 'c1', year: 5, division: 'A', shift: 'morning' },
+          },
+          {
+            id: 's2',
+            name: 'Física',
+            courses: { id: 'c2', year: 6, division: 'B', shift: 'afternoon' },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMySubjects(teacherMembership)).resolves.toEqual([
+      {
+        id: 's1',
+        name: 'Matemática',
+        course: { id: 'c1', year: 5, division: 'A', shift: 'morning' },
+      },
+      {
+        id: 's2',
+        name: 'Física',
+        course: { id: 'c2', year: 6, division: 'B', shift: 'afternoon' },
+      },
+    ]);
+  });
+
+  it('sin materias → lista vacía', async () => {
+    const svc = service({ subjects: { data: [], error: null } });
+    await expect(svc.getMySubjects(teacherMembership)).resolves.toEqual([]);
+  });
+});
+
+describe('MeService · getMyCourses', () => {
+  it('deduplica los cursos donde enseña', async () => {
+    const svc = service({
+      subjects: {
+        data: [
+          {
+            id: 's1',
+            name: 'Matemática',
+            courses: { id: 'c1', year: 5, division: 'A', shift: 'morning' },
+          },
+          {
+            id: 's2',
+            name: 'Física',
+            courses: { id: 'c1', year: 5, division: 'A', shift: 'morning' },
+          },
+          {
+            id: 's3',
+            name: 'Química',
+            courses: { id: 'c2', year: 6, division: 'B', shift: 'afternoon' },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMyCourses(teacherMembership)).resolves.toEqual([
+      { id: 'c1', year: 5, division: 'A', shift: 'morning' },
+      { id: 'c2', year: 6, division: 'B', shift: 'afternoon' },
+    ]);
+  });
+});
+
+describe('MeService · getMyStudents', () => {
+  it('devuelve los hijos vinculados vía guardian_links', async () => {
+    const svc = service({
+      guardian_links: {
+        data: [
+          {
+            students: {
+              id: 'st1',
+              first_name: 'Juana',
+              last_name: 'Pérez',
+              courses: { id: 'c1', year: 3, division: 'B' },
+            },
+          },
+          {
+            students: {
+              id: 'st2',
+              first_name: 'Luis',
+              last_name: 'Pérez',
+              courses: { id: 'c2', year: 1, division: 'A' },
+            },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMyStudents(guardianMembership)).resolves.toEqual([
+      {
+        id: 'st1',
+        firstName: 'Juana',
+        lastName: 'Pérez',
+        course: { id: 'c1', year: 3, division: 'B' },
+      },
+      {
+        id: 'st2',
+        firstName: 'Luis',
+        lastName: 'Pérez',
+        course: { id: 'c2', year: 1, division: 'A' },
+      },
+    ]);
+  });
+
+  it('estudiante sin curso → course null', async () => {
+    const svc = service({
+      guardian_links: {
+        data: [
+          {
+            students: {
+              id: 'st1',
+              first_name: 'Juana',
+              last_name: 'Pérez',
+              courses: null,
+            },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMyStudents(guardianMembership)).resolves.toEqual([
+      { id: 'st1', firstName: 'Juana', lastName: 'Pérez', course: null },
+    ]);
+  });
+});
