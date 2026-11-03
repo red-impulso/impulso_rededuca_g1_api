@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Put,
   Query,
   UseGuards,
@@ -48,5 +49,20 @@ export class GradesController {
     @Body() dto: SaveGradesDto,
   ) {
     return this.grades.saveSheet(membership, dto);
+  }
+}
+
+@Controller('students')
+@UseGuards(AuthGuard, MembershipGuard)
+@Roles('admin', 'director', 'teacher', 'guardian')
+export class StudentsController {
+  constructor(private readonly grades: GradesService) {}
+
+  @Get(':studentId/grades')
+  studentGrades(
+    @CurrentMembership() membership: Membership,
+    @Param('studentId') studentId: string,
+  ) {
+    return this.grades.getStudentGrades(membership, studentId);
   }
 }

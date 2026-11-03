@@ -12,6 +12,6 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
-      - run: supabase db push --db-url "$SUPABASE_DB_URL"
+      - run: npx supabase db push --db-url "$SUPABASE_DB_URL" --yes
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

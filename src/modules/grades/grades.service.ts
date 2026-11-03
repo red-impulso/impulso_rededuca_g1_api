@@ -24,6 +24,12 @@ export interface SaveGradesResult {
   saved: number;
 }
 
+export interface StudentGradeRow {
+  subject: { id: string; name: string };
+  period: { id: string; name: string };
+  value: number;
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -169,6 +175,42 @@ export class GradesService {
     return { saved: upserted?.length ?? changes.length };
   }
 
+  /**
+   * Notas de un alumno ordenadas por materia y período.
+   * admin/director: acceso total; teacher: debe dictar al menos una materia en
+   * el curso del alumno; guardian: debe estar vinculado vía guardian_links.
+   */
+  async getStudentGrades(
+    membership: Membership,
+    studentId: string,
+  ): Promise<StudentGradeRow[]> {
+    const student = await this.studentFor(membership, studentId);
+    await this.assertCanViewStudent(membership, student);
+
+    const { data, error } = await this.supabase.admin
+      .from('grades')
+      .select(
+        'value, subjects!inner(id, name), grading_periods!inner(id, name)',
+      )
+      .eq('institution_id', membership.institutionId)
+      .eq('student_id', studentId)
+      .not('value', 'is', null);
+    if (error) throw error;
+
+    return (data ?? [])
+      .filter((g: any) => g.value !== null)
+      .map((g: any) => ({
+        subject: { id: g.subjects.id, name: g.subjects.name },
+        period: { id: g.grading_periods.id, name: g.grading_periods.name },
+        value: Number(g.value),
+      }))
+      .sort(
+        (a, b) =>
+          a.subject.name.localeCompare(b.subject.name, 'es') ||
+          a.period.name.localeCompare(b.period.name, 'es'),
+      );
+  }
+
   /** Materia dentro de la institución; si el miembro es docente, debe tenerla asignada. */
   private async subjectFor(membership: Membership, subjectId: string) {
     if (!UUID_RE.test(subjectId)) {
@@ -207,6 +249,64 @@ export class GradesService {
     if (error) throw error;
     if (!data) throw new NotFoundException('Período no encontrado');
     return data;
+  }
+
+  /** Alumno dentro de la institución activa. */
+  private async studentFor(membership: Membership, studentId: string) {
+    if (!UUID_RE.test(studentId)) {
+      throw new BadRequestException('studentId inválido');
+    }
+    const { data, error } = await this.supabase.admin
+      .from('students')
+      .select('id, course_id')
+      .eq('id', studentId)
+      .eq('institution_id', membership.institutionId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new NotFoundException('Estudiante no encontrado');
+    return data;
+  }
+
+  /**
+   * Reglas de visibilidad por rol: el tutor debe estar vinculado al alumno en
+   * guardian_links y el docente debe tener asignada al menos una materia del
+   * curso del alumno. admin/director no tienen restricción.
+   */
+  private async assertCanViewStudent(
+    membership: Membership,
+    student: { id: string; course_id: string | null },
+  ) {
+    if (membership.role === 'guardian') {
+      const { data, error } = await this.supabase.admin
+        .from('guardian_links')
+        .select('id')
+        .eq('guardian_membership_id', membership.id)
+        .eq('student_id', student.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        throw new ForbiddenException(
+          'El tutor no está vinculado a este estudiante',
+        );
+      }
+      return;
+    }
+    if (membership.role === 'teacher') {
+      const { data, error } = student.course_id
+        ? await this.supabase.admin
+            .from('subjects')
+            .select('id')
+            .eq('course_id', student.course_id)
+            .eq('teacher_membership_id', membership.id)
+            .limit(1)
+        : { data: [] as never[], error: null };
+      if (error) throw error;
+      if (!data?.length) {
+        throw new ForbiddenException(
+          'El docente no tiene materias asignadas en el curso del estudiante',
+        );
+      }
+    }
   }
 
   private async courseStudents(institutionId: string, courseId: string) {

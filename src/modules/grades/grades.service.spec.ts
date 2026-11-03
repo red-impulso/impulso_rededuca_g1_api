@@ -32,6 +32,12 @@ function tables(init: Record<string, unknown[]>) {
         in: (...args: unknown[]) => (
           table.calls.push({ op: 'in', args }), q
         ),
+        not: (...args: unknown[]) => (
+          table.calls.push({ op: 'not', args }), q
+        ),
+        limit: (...args: unknown[]) => (
+          table.calls.push({ op: 'limit', args }), q
+        ),
         order: (...args: unknown[]) => (
           table.calls.push({ op: 'order', args }), q
         ),
@@ -68,6 +74,27 @@ const teacher: Membership = {
   userId: 'uT',
   institutionId: INST,
   role: 'teacher',
+};
+
+const guardian: Membership = {
+  id: 'mG',
+  userId: 'uG',
+  institutionId: INST,
+  role: 'guardian',
+};
+
+const admin: Membership = {
+  id: 'mA',
+  userId: 'uA',
+  institutionId: INST,
+  role: 'admin',
+};
+
+const director: Membership = {
+  id: 'mD',
+  userId: 'uD',
+  institutionId: INST,
+  role: 'director',
 };
 
 const subjectRow = (teacherMembershipId = 'mT') => ({
@@ -330,5 +357,126 @@ describe('GradesService · saveSheet', () => {
     ).resolves.toEqual({ saved: 0 });
     expect((state.grades?.calls ?? []).some((c) => c.op === 'upsert')).toBe(false);
     expect(events.emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('GradesService · getStudentGrades', () => {
+  const studentRow = { id: ST1, course_id: 'c1' };
+
+  const gradeRows = [
+    {
+      value: 9,
+      subjects: { id: 's-mat', name: 'Matemática' },
+      grading_periods: { id: 'p2', name: '2.º trimestre' },
+    },
+    {
+      value: 7.5,
+      subjects: { id: 's-len', name: 'Lengua' },
+      grading_periods: { id: 'p1', name: '1.er trimestre' },
+    },
+    {
+      value: 8,
+      subjects: { id: 's-mat', name: 'Matemática' },
+      grading_periods: { id: 'p1', name: '1.er trimestre' },
+    },
+    {
+      value: null,
+      subjects: { id: 's-his', name: 'Historia' },
+      grading_periods: { id: 'p1', name: '1.er trimestre' },
+    },
+  ];
+
+  const sortedGrades = [
+    {
+      subject: { id: 's-len', name: 'Lengua' },
+      period: { id: 'p1', name: '1.er trimestre' },
+      value: 7.5,
+    },
+    {
+      subject: { id: 's-mat', name: 'Matemática' },
+      period: { id: 'p1', name: '1.er trimestre' },
+      value: 8,
+    },
+    {
+      subject: { id: 's-mat', name: 'Matemática' },
+      period: { id: 'p2', name: '2.º trimestre' },
+      value: 9,
+    },
+  ];
+
+  it('tutor no vinculado al alumno → 403 y no consulta notas', async () => {
+    const { svc, state } = service({
+      students: [{ data: studentRow, error: null }],
+      guardian_links: [{ data: null, error: null }],
+    });
+    await expect(
+      svc.getStudentGrades(guardian, ST1),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(state.grades?.calls ?? []).toEqual([]);
+  });
+
+  it('tutor vinculado → notas ordenadas por materia y período, sin nulls', async () => {
+    const { svc } = service({
+      students: [{ data: studentRow, error: null }],
+      guardian_links: [{ data: { id: 'l1' }, error: null }],
+      grades: [{ data: gradeRows, error: null }],
+    });
+    await expect(
+      svc.getStudentGrades(guardian, ST1),
+    ).resolves.toEqual(sortedGrades);
+  });
+
+  it('docente sin materias en el curso del alumno → 403', async () => {
+    const { svc, state } = service({
+      students: [{ data: studentRow, error: null }],
+      subjects: [{ data: [], error: null }],
+    });
+    await expect(
+      svc.getStudentGrades(teacher, ST1),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(state.grades?.calls ?? []).toEqual([]);
+  });
+
+  it('docente con materia en el curso del alumno → devuelve notas', async () => {
+    const { svc } = service({
+      students: [{ data: studentRow, error: null }],
+      subjects: [{ data: [{ id: SUBJECT }], error: null }],
+      grades: [{ data: gradeRows, error: null }],
+    });
+    await expect(
+      svc.getStudentGrades(teacher, ST1),
+    ).resolves.toEqual(sortedGrades);
+  });
+
+  it('alumno inexistente o de otra institución → 404', async () => {
+    for (const member of [admin, guardian, teacher]) {
+      const { svc } = service({
+        students: [{ data: null, error: null }],
+      });
+      await expect(
+        svc.getStudentGrades(member, ST1),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    }
+  });
+
+  it('studentId inválido → 400', async () => {
+    const { svc } = service({});
+    await expect(
+      svc.getStudentGrades(admin, 'no-es-uuid'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('admin y director → notas sin validación de vínculo ni materias', async () => {
+    for (const member of [admin, director]) {
+      const { svc, state } = service({
+        students: [{ data: studentRow, error: null }],
+        grades: [{ data: gradeRows, error: null }],
+      });
+      await expect(
+        svc.getStudentGrades(member, ST1),
+      ).resolves.toEqual(sortedGrades);
+      expect(state.guardian_links?.calls ?? []).toEqual([]);
+      expect(state.subjects?.calls ?? []).toEqual([]);
+    }
   });
 });
