@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { MeModule } from './me/me.module.js';
 import { AnnouncementsModule } from './modules/announcements/announcements.module.js';
 import { AttendanceModule } from './modules/attendance/attendance.module.js';
+import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { GradesModule } from './modules/grades/grades.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
@@ -21,6 +22,7 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     AttendanceModule,
     AnnouncementsModule,
     NotificationsModule,
+    DashboardModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],
