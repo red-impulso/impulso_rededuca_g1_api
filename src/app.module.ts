@@ -11,6 +11,7 @@ import { AttendanceModule } from './modules/attendance/attendance.module.js';
 import { CoursesModule } from './modules/courses/courses.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { GradesModule } from './modules/grades/grades.module.js';
+import { LeadsModule } from './modules/leads/leads.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
 
@@ -25,6 +26,7 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     NotificationsModule,
     DashboardModule,
     CoursesModule,
+    LeadsModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],
