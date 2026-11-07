@@ -147,10 +147,12 @@ describe('GradesService · getSheet', () => {
       {
         student: { id: ST1, firstName: 'Ana', lastName: 'García' },
         value: 8.5,
+        observations: null,
       },
       {
         student: { id: ST2, firstName: 'Luis', lastName: 'Pérez' },
         value: null,
+        observations: null,
       },
     ]);
   });
@@ -177,7 +179,13 @@ describe('GradesService · getSheet', () => {
 });
 
 describe('GradesService · saveSheet', () => {
-  const dto = (entries: { studentId: string; value: number | null }[]) => ({
+  const dto = (
+    entries: {
+      studentId: string;
+      value: number | null;
+      observations?: string;
+    }[],
+  ) => ({
     subjectId: SUBJECT,
     periodId: PERIOD,
     entries,
@@ -318,6 +326,116 @@ describe('GradesService · saveSheet', () => {
     ]);
   });
 
+  it('observación de más de 500 caracteres → 400 y no guarda nada', async () => {
+    const { svc, state } = service({
+      ...baseTables,
+      students: [{ data: roster, error: null }],
+    });
+    await expect(
+      svc.saveSheet(
+        teacher,
+        dto([
+          { studentId: ST1, value: 8, observations: 'x'.repeat(501) },
+        ]),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect((state.grades?.calls ?? []).some((c) => c.op === 'upsert')).toBe(false);
+    expect(state.grade_changes?.calls ?? []).toEqual([]);
+  });
+
+  it('guarda observaciones y audita solo los cambios de nota', async () => {
+    const { svc, state } = service({
+      ...baseTables,
+      students: [{ data: roster, error: null }],
+      grades: [
+        // ST1 ya tiene nota 8 sin observación
+        {
+          data: [{ id: 'g1', student_id: ST1, value: 8, observations: null }],
+          error: null,
+        },
+        // resultado del upsert().select()
+        {
+          data: [
+            { id: 'g1', student_id: ST1 },
+            { id: 'g2', student_id: ST2 },
+          ],
+          error: null,
+        },
+      ],
+      grade_changes: [{ data: null, error: null }],
+    });
+
+    await expect(
+      svc.saveSheet(
+        teacher,
+        dto([
+          { studentId: ST1, value: 8, observations: 'Revisar oral' },
+          { studentId: ST2, value: 7, observations: 'Buen trabajo' },
+        ]),
+      ),
+    ).resolves.toEqual({ saved: 2 });
+
+    const upserts = state.grades.calls.filter((c) => c.op === 'upsert');
+    expect(upserts[0].args[0]).toEqual([
+      expect.objectContaining({
+        student_id: ST1,
+        value: 8,
+        observations: 'Revisar oral',
+      }),
+      expect.objectContaining({
+        student_id: ST2,
+        value: 7,
+        observations: 'Buen trabajo',
+      }),
+    ]);
+
+    // solo ST2 cambió de nota → una sola fila de auditoría
+    const audits = state.grade_changes.calls.filter((c) => c.op === 'insert');
+    expect(audits).toHaveLength(1);
+    expect(audits[0].args[0]).toEqual([
+      {
+        grade_id: 'g2',
+        institution_id: INST,
+        previous_value: null,
+        new_value: 7,
+        changed_by: 'uT',
+      },
+    ]);
+  });
+
+  it('observations omitida conserva la observación previa', async () => {
+    const { svc, state } = service({
+      ...baseTables,
+      students: [{ data: roster, error: null }],
+      grades: [
+        {
+          data: [
+            {
+              id: 'g1',
+              student_id: ST1,
+              value: 8,
+              observations: 'Revisar oral',
+            },
+          ],
+          error: null,
+        },
+        { data: [{ id: 'g1', student_id: ST1 }], error: null },
+      ],
+      grade_changes: [{ data: null, error: null }],
+    });
+
+    await svc.saveSheet(teacher, dto([{ studentId: ST1, value: 9 }]));
+
+    const upserts = state.grades.calls.filter((c) => c.op === 'upsert');
+    expect(upserts[0].args[0]).toEqual([
+      expect.objectContaining({
+        student_id: ST1,
+        value: 9,
+        observations: 'Revisar oral',
+      }),
+    ]);
+  });
+
   it('re-guardar la misma planilla es idempotente: saved 0, sin writes ni evento', async () => {
     const { svc, state, events } = service({
       ...baseTables,
@@ -366,21 +484,25 @@ describe('GradesService · getStudentGrades', () => {
   const gradeRows = [
     {
       value: 9,
+      observations: 'Excelente desempeño',
       subjects: { id: 's-mat', name: 'Matemática' },
       grading_periods: { id: 'p2', name: '2.º trimestre' },
     },
     {
       value: 7.5,
+      observations: null,
       subjects: { id: 's-len', name: 'Lengua' },
       grading_periods: { id: 'p1', name: '1.er trimestre' },
     },
     {
       value: 8,
+      observations: null,
       subjects: { id: 's-mat', name: 'Matemática' },
       grading_periods: { id: 'p1', name: '1.er trimestre' },
     },
     {
       value: null,
+      observations: null,
       subjects: { id: 's-his', name: 'Historia' },
       grading_periods: { id: 'p1', name: '1.er trimestre' },
     },
@@ -391,16 +513,19 @@ describe('GradesService · getStudentGrades', () => {
       subject: { id: 's-len', name: 'Lengua' },
       period: { id: 'p1', name: '1.er trimestre' },
       value: 7.5,
+      observations: null,
     },
     {
       subject: { id: 's-mat', name: 'Matemática' },
       period: { id: 'p1', name: '1.er trimestre' },
       value: 8,
+      observations: null,
     },
     {
       subject: { id: 's-mat', name: 'Matemática' },
       period: { id: 'p2', name: '2.º trimestre' },
       value: 9,
+      observations: 'Excelente desempeño',
     },
   ];
 

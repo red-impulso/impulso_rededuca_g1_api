@@ -6,6 +6,9 @@ export interface NotificationItem {
   id: string;
   title: string;
   body: string;
+  type: string;
+  link: string | null;
+  studentId: string | null;
   readAt: string | null;
   createdAt: string;
 }
@@ -38,6 +41,9 @@ interface NewNotification {
   recipient_id: string;
   title: string;
   body: string;
+  type?: 'grade' | 'attendance' | 'announcement' | 'general';
+  link?: string;
+  student_id?: string;
 }
 
 @Injectable()
@@ -48,7 +54,7 @@ export class NotificationsService {
   async list(membership: Membership): Promise<NotificationItem[]> {
     const { data, error } = await this.supabase.admin
       .from('notifications')
-      .select('id, title, body, read_at, created_at')
+      .select('id, title, body, type, link, student_id, read_at, created_at')
       .eq('institution_id', membership.institutionId)
       .eq('recipient_id', membership.userId)
       .order('created_at', { ascending: false })
@@ -58,6 +64,9 @@ export class NotificationsService {
       id: n.id,
       title: n.title,
       body: n.body,
+      type: n.type,
+      link: n.link,
+      studentId: n.student_id,
       readAt: n.read_at,
       createdAt: n.created_at,
     }));
@@ -105,6 +114,31 @@ export class NotificationsService {
     return { success: true };
   }
 
+  /**
+   * Borra una notificación propia. Si no existe, es de otra institución o
+   * pertenece a otro usuario, responde 404 igual que markRead.
+   */
+  async remove(membership: Membership, id: string): Promise<void> {
+    const { data, error } = await this.supabase.admin
+      .from('notifications')
+      .select('id, institution_id, recipient_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw error;
+    if (
+      !data ||
+      data.institution_id !== membership.institutionId ||
+      data.recipient_id !== membership.userId
+    ) {
+      throw new NotFoundException('Notificación no encontrada');
+    }
+    const { error: deleteError } = await this.supabase.admin
+      .from('notifications')
+      .delete()
+      .eq('id', data.id);
+    if (deleteError) throw deleteError;
+  }
+
   /** Marca como leídas todas las pendientes del usuario en la institución. */
   async markAllRead(membership: Membership): Promise<{ updated: number }> {
     const { data, error } = await this.supabase.admin
@@ -144,6 +178,9 @@ export class NotificationsService {
           recipient_id: recipientId,
           title: 'Nueva nota',
           body: `Nueva nota en ${subjectName}`,
+          type: 'grade',
+          link: '/calificaciones',
+          student_id: studentId,
         });
       }
     }
@@ -181,6 +218,9 @@ export class NotificationsService {
           recipient_id: recipientId,
           title: 'Inasistencia registrada',
           body: `${name} estuvo ausente el ${event.date}`,
+          type: 'attendance',
+          link: '/asistencia',
+          student_id: studentId,
         });
       }
     }
@@ -199,6 +239,8 @@ export class NotificationsService {
         recipient_id: recipientId,
         title: 'Nuevo comunicado',
         body: `Nuevo comunicado: ${event.title}`,
+        type: 'announcement' as const,
+        link: '/comunicados',
       })),
     );
   }

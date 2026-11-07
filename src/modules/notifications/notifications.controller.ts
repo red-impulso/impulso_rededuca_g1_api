@@ -1,6 +1,8 @@
 import {
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   Post,
   UseGuards,
@@ -41,5 +43,14 @@ export class NotificationsController {
   @Post('read-all')
   markAllRead(@CurrentMembership() membership: Membership) {
     return this.notifications.markAllRead(membership);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  async remove(
+    @CurrentMembership() membership: Membership,
+    @Param('id') id: string,
+  ) {
+    await this.notifications.remove(membership, id);
   }
 }

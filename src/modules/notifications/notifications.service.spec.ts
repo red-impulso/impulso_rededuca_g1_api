@@ -43,6 +43,9 @@ function tables(init: Record<string, unknown[]>) {
         update: (...args: unknown[]) => (
           table.calls.push({ op: 'update', args }), q
         ),
+        delete: (...args: unknown[]) => (
+          table.calls.push({ op: 'delete', args }), q
+        ),
         insert: (...args: unknown[]) => (
           table.calls.push({ op: 'insert', args }), q
         ),
@@ -130,8 +133,11 @@ describe('NotificationsService · grades.saved', () => {
         institution_id: INST,
         title: 'Nueva nota',
         body: 'Nueva nota en Matemática',
+        type: 'grade',
+        link: '/calificaciones',
       });
     }
+    expect(rows.map((r) => r.student_id).sort()).toEqual([ST1, ST1, ST2].sort());
   });
 
   it('alumno sin tutores vinculados no genera notificación', async () => {
@@ -220,12 +226,18 @@ describe('NotificationsService · attendance.saved', () => {
       recipient_id: 'uG1',
       title: 'Inasistencia registrada',
       body: 'Ana García estuvo ausente el 2026-11-02',
+      type: 'attendance',
+      link: '/asistencia',
+      student_id: ST1,
     });
     expect(rows).toContainEqual({
       institution_id: INST,
       recipient_id: 'uG2',
       title: 'Inasistencia registrada',
       body: 'Luis Pérez estuvo ausente el 2026-11-02',
+      type: 'attendance',
+      link: '/asistencia',
+      student_id: ST2,
     });
   });
 
@@ -268,6 +280,8 @@ describe('NotificationsService · announcement.created', () => {
         recipient_id: 'uG1',
         title: 'Nuevo comunicado',
         body: 'Nuevo comunicado: Reunión de padres',
+        type: 'announcement',
+        link: '/comunicados',
       },
     ]);
     expect(state.students?.calls ?? []).toEqual([]);
@@ -364,6 +378,9 @@ describe('NotificationsService · list', () => {
       id: 'n2',
       title: 'Nuevo comunicado',
       body: 'Nuevo comunicado: Reunión',
+      type: 'announcement',
+      link: '/comunicados',
+      student_id: null,
       read_at: null,
       created_at: '2026-11-02T11:00:00Z',
     },
@@ -371,6 +388,9 @@ describe('NotificationsService · list', () => {
       id: 'n1',
       title: 'Nueva nota',
       body: 'Nueva nota en Matemática',
+      type: 'grade',
+      link: '/calificaciones',
+      student_id: ST1,
       read_at: '2026-11-02T10:30:00Z',
       created_at: '2026-11-02T10:00:00Z',
     },
@@ -403,6 +423,9 @@ describe('NotificationsService · list', () => {
         id: 'n2',
         title: 'Nuevo comunicado',
         body: 'Nuevo comunicado: Reunión',
+        type: 'announcement',
+        link: '/comunicados',
+        studentId: null,
         readAt: null,
         createdAt: '2026-11-02T11:00:00Z',
       },
@@ -410,6 +433,9 @@ describe('NotificationsService · list', () => {
         id: 'n1',
         title: 'Nueva nota',
         body: 'Nueva nota en Matemática',
+        type: 'grade',
+        link: '/calificaciones',
+        studentId: ST1,
         readAt: '2026-11-02T10:30:00Z',
         createdAt: '2026-11-02T10:00:00Z',
       },
@@ -511,6 +537,73 @@ describe('NotificationsService · markRead', () => {
       notifications: [{ data: null, error: null }],
     });
     await expect(svc.markRead(guardian, 'nX')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+});
+
+describe('NotificationsService · remove', () => {
+  const own = {
+    id: 'n1',
+    institution_id: INST,
+    recipient_id: 'uG',
+  };
+
+  it('notificación propia → la borra por id', async () => {
+    const { svc, state } = service({
+      notifications: [
+        { data: own, error: null },
+        { data: null, error: null },
+      ],
+    });
+
+    await expect(svc.remove(guardian, 'n1')).resolves.toBeUndefined();
+
+    const deletes = state.notifications.calls.filter(
+      (c) => c.op === 'delete',
+    );
+    expect(deletes).toHaveLength(1);
+    expect(state.notifications.calls).toContainEqual({
+      op: 'eq',
+      args: ['id', 'n1'],
+    });
+  });
+
+  it('notificación de otro usuario → 404 y no borra', async () => {
+    const { svc, state } = service({
+      notifications: [
+        { data: { ...own, recipient_id: 'uOtro' }, error: null },
+      ],
+    });
+
+    await expect(svc.remove(guardian, 'n1')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(
+      state.notifications.calls.filter((c) => c.op === 'delete'),
+    ).toEqual([]);
+  });
+
+  it('notificación de otra institución → 404 y no borra', async () => {
+    const { svc, state } = service({
+      notifications: [
+        { data: { ...own, institution_id: OTHER_INST }, error: null },
+      ],
+    });
+
+    await expect(svc.remove(guardian, 'n1')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(
+      state.notifications.calls.filter((c) => c.op === 'delete'),
+    ).toEqual([]);
+  });
+
+  it('notificación inexistente → 404', async () => {
+    const { svc } = service({
+      notifications: [{ data: null, error: null }],
+    });
+    await expect(svc.remove(guardian, 'nX')).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });
