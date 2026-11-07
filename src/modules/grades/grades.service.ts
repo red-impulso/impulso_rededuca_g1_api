@@ -18,6 +18,7 @@ export interface GradingPeriodSummary {
 export interface GradeSheetRow {
   student: { id: string; firstName: string; lastName: string };
   value: number | null;
+  observations: string | null;
 }
 
 export interface SaveGradesResult {
@@ -28,6 +29,7 @@ export interface StudentGradeRow {
   subject: { id: string; name: string };
   period: { id: string; name: string };
   value: number;
+  observations: string | null;
 }
 
 const UUID_RE =
@@ -71,19 +73,32 @@ export class GradesService {
 
     const { data: grades, error } = await this.supabase.admin
       .from('grades')
-      .select('student_id, value')
+      .select('student_id, value, observations')
       .eq('subject_id', subjectId)
       .eq('period_id', periodId);
     if (error) throw error;
 
-    const valueByStudent = new Map<string, number>(
-      (grades ?? []).map((g: any) => [g.student_id, Number(g.value)]),
+    const gradeByStudent = new Map<
+      string,
+      { value: number | null; observations: string | null }
+    >(
+      (grades ?? []).map((g: any) => [
+        g.student_id,
+        {
+          value: g.value === null ? null : Number(g.value),
+          observations: g.observations ?? null,
+        },
+      ]),
     );
 
-    return students.map((s: any) => ({
-      student: { id: s.id, firstName: s.first_name, lastName: s.last_name },
-      value: valueByStudent.get(s.id) ?? null,
-    }));
+    return students.map((s: any) => {
+      const grade = gradeByStudent.get(s.id);
+      return {
+        student: { id: s.id, firstName: s.first_name, lastName: s.last_name },
+        value: grade?.value ?? null,
+        observations: grade?.observations ?? null,
+      };
+    });
   }
 
   /**
@@ -123,29 +138,56 @@ export class GradesService {
     const db = this.supabase.admin;
     const { data: existing, error: existingError } = await db
       .from('grades')
-      .select('id, student_id, value')
+      .select('id, student_id, value, observations')
       .eq('subject_id', subjectId)
       .eq('period_id', periodId);
     if (existingError) throw existingError;
 
-    const previousByStudent = new Map<string, number>(
-      (existing ?? []).map((g: any) => [g.student_id, Number(g.value)]),
+    const previousByStudent = new Map<
+      string,
+      { value: number | null; observations: string | null }
+    >(
+      (existing ?? []).map((g: any) => [
+        g.student_id,
+        {
+          value: g.value === null ? null : Number(g.value),
+          observations: g.observations ?? null,
+        },
+      ]),
     );
 
-    const changes = [...entries].filter(
-      ([studentId, value]) => previousByStudent.get(studentId) !== value,
-    );
+    // observations omitida conserva el valor previo; provista lo reemplaza.
+    const changes = [...entries]
+      .map(([studentId, entry]) => {
+        const previous = previousByStudent.get(studentId) ?? null;
+        return {
+          studentId,
+          value: entry.value,
+          observations:
+            entry.observations === undefined
+              ? (previous?.observations ?? null)
+              : entry.observations,
+          previous,
+        };
+      })
+      .filter(
+        (row) =>
+          !row.previous ||
+          row.previous.value !== row.value ||
+          row.previous.observations !== row.observations,
+      );
     if (!changes.length) return { saved: 0 };
 
     const { data: upserted, error: upsertError } = await db
       .from('grades')
       .upsert(
-        changes.map(([studentId, value]) => ({
+        changes.map((row) => ({
           institution_id: membership.institutionId,
-          student_id: studentId,
+          student_id: row.studentId,
           subject_id: subjectId,
           period_id: periodId,
-          value,
+          value: row.value,
+          observations: row.observations,
           updated_at: new Date().toISOString(),
         })),
         { onConflict: 'student_id,subject_id,period_id' },
@@ -153,17 +195,29 @@ export class GradesService {
       .select('id, student_id');
     if (upsertError) throw upsertError;
 
-    const newValueByStudent = new Map(changes);
-    const { error: auditError } = await db.from('grade_changes').insert(
-      (upserted ?? []).map((row: any) => ({
+    const valueChanges = new Set(
+      changes
+        .filter((row) => (row.previous?.value ?? null) !== row.value)
+        .map((row) => row.studentId),
+    );
+    const newValueByStudent = new Map(
+      changes.map((row) => [row.studentId, row.value]),
+    );
+    const auditRows = (upserted ?? [])
+      .filter((row: any) => valueChanges.has(row.student_id))
+      .map((row: any) => ({
         grade_id: row.id,
         institution_id: membership.institutionId,
-        previous_value: previousByStudent.get(row.student_id) ?? null,
+        previous_value: previousByStudent.get(row.student_id)?.value ?? null,
         new_value: newValueByStudent.get(row.student_id) ?? null,
         changed_by: membership.userId,
-      })),
-    );
-    if (auditError) throw auditError;
+      }));
+    if (auditRows.length) {
+      const { error: auditError } = await db
+        .from('grade_changes')
+        .insert(auditRows);
+      if (auditError) throw auditError;
+    }
 
     this.events.emit('grades.saved', {
       institutionId: membership.institutionId,
@@ -190,7 +244,7 @@ export class GradesService {
     const { data, error } = await this.supabase.admin
       .from('grades')
       .select(
-        'value, subjects!inner(id, name), grading_periods!inner(id, name)',
+        'value, observations, subjects!inner(id, name), grading_periods!inner(id, name)',
       )
       .eq('institution_id', membership.institutionId)
       .eq('student_id', studentId)
@@ -203,6 +257,7 @@ export class GradesService {
         subject: { id: g.subjects.id, name: g.subjects.name },
         period: { id: g.grading_periods.id, name: g.grading_periods.name },
         value: Number(g.value),
+        observations: g.observations ?? null,
       }))
       .sort(
         (a, b) =>
@@ -322,16 +377,39 @@ export class GradesService {
   }
 
   /**
-   * Normaliza entries a un Map<studentId, number>: descarta los null (no crean
-   * ni borran notas) y exige números entre 1 y 10 con hasta 2 decimales.
+   * Normaliza entries a un Map<studentId, {value, observations}>: exige notas
+   * entre 1 y 10 con hasta 2 decimales y observaciones de texto de hasta 500
+   * caracteres. Un null sin observaciones no crea ni borra nada; un null con
+   * observaciones guarda una fila sin nota.
    */
   private validateEntries(entries: SaveGradesDto['entries']) {
-    const normalized = new Map<string, number>();
+    const normalized = new Map<
+      string,
+      { value: number | null; observations: string | undefined }
+    >();
     for (const entry of entries) {
       if (!entry || typeof entry.studentId !== 'string') {
         throw new BadRequestException('Cada entry requiere studentId');
       }
-      if (entry.value === null) continue;
+      let observations: string | undefined;
+      if (entry.observations !== undefined && entry.observations !== null) {
+        if (typeof entry.observations !== 'string') {
+          throw new BadRequestException(
+            `La observación de ${entry.studentId} debe ser texto`,
+          );
+        }
+        if (entry.observations.length > 500) {
+          throw new BadRequestException(
+            `La observación de ${entry.studentId} admite hasta 500 caracteres`,
+          );
+        }
+        observations = entry.observations;
+      }
+      if (entry.value === null) {
+        if (observations === undefined) continue;
+        normalized.set(entry.studentId, { value: null, observations });
+        continue;
+      }
       if (typeof entry.value !== 'number' || !Number.isFinite(entry.value)) {
         throw new BadRequestException(
           `La nota de ${entry.studentId} debe ser numérica`,
@@ -348,7 +426,10 @@ export class GradesService {
           `La nota de ${entry.studentId} admite hasta 2 decimales`,
         );
       }
-      normalized.set(entry.studentId, cents / 100);
+      normalized.set(entry.studentId, {
+        value: cents / 100,
+        observations,
+      });
     }
     return normalized;
   }
