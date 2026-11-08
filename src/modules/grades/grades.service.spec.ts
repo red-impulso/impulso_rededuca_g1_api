@@ -343,8 +343,8 @@ describe('GradesService · saveSheet', () => {
     expect(state.grade_changes?.calls ?? []).toEqual([]);
   });
 
-  it('guarda observaciones y audita solo los cambios de nota', async () => {
-    const { svc, state } = service({
+  it('guarda observaciones y audita/notifica solo los cambios de nota', async () => {
+    const { svc, state, events } = service({
       ...baseTables,
       students: [{ data: roster, error: null }],
       grades: [
@@ -401,6 +401,55 @@ describe('GradesService · saveSheet', () => {
         changed_by: 'uT',
       },
     ]);
+
+    // ST1 solo cambió la observación → queda fuera de la notificación
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit).toHaveBeenCalledWith('grades.saved', {
+      institutionId: INST,
+      subjectId: SUBJECT,
+      periodId: PERIOD,
+      studentIds: [ST2],
+    });
+  });
+
+  it('cambio exclusivo de observations persiste pero no emite grades.saved', async () => {
+    const { svc, state, events } = service({
+      ...baseTables,
+      students: [{ data: roster, error: null }],
+      grades: [
+        // ST1 ya tiene nota 8 sin observación
+        {
+          data: [{ id: 'g1', student_id: ST1, value: 8, observations: null }],
+          error: null,
+        },
+        // resultado del upsert().select()
+        { data: [{ id: 'g1', student_id: ST1 }], error: null },
+      ],
+      grade_changes: [{ data: null, error: null }],
+    });
+
+    await expect(
+      svc.saveSheet(
+        teacher,
+        dto([{ studentId: ST1, value: 8, observations: 'Revisar oral' }]),
+      ),
+    ).resolves.toEqual({ saved: 1 });
+
+    const upserts = state.grades.calls.filter((c) => c.op === 'upsert');
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].args[0]).toEqual([
+      expect.objectContaining({
+        student_id: ST1,
+        value: 8,
+        observations: 'Revisar oral',
+      }),
+    ]);
+
+    // sin cambio de nota no hay auditoría ni notificación "Nueva nota"
+    expect(state.grade_changes.calls.filter((c) => c.op === 'insert')).toEqual(
+      [],
+    );
+    expect(events.emit).not.toHaveBeenCalled();
   });
 
   it('observations omitida conserva la observación previa', async () => {
