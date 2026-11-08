@@ -104,7 +104,9 @@ export class GradesService {
   /**
    * Upsert atómico de la planilla: valida todo el lote antes de escribir,
    * inserta/actualiza solo las notas que cambiaron y audita cada cambio en
-   * grade_changes. Emite 'grades.saved' cuando hubo escrituras efectivas.
+   * grade_changes. Emite 'grades.saved' solo con los alumnos cuyo valor
+   * numérico cambió o se insertó; un cambio exclusivo de observations no
+   * dispara la notificación de nueva nota.
    */
   async saveSheet(
     membership: Membership,
@@ -219,12 +221,17 @@ export class GradesService {
       if (auditError) throw auditError;
     }
 
-    this.events.emit('grades.saved', {
-      institutionId: membership.institutionId,
-      subjectId,
-      periodId,
-      studentIds: (upserted ?? []).map((row: any) => row.student_id),
-    });
+    const notifiedStudentIds = (upserted ?? [])
+      .filter((row: any) => valueChanges.has(row.student_id))
+      .map((row: any) => row.student_id);
+    if (notifiedStudentIds.length) {
+      this.events.emit('grades.saved', {
+        institutionId: membership.institutionId,
+        subjectId,
+        periodId,
+        studentIds: notifiedStudentIds,
+      });
+    }
 
     return { saved: upserted?.length ?? changes.length };
   }

@@ -179,7 +179,7 @@ export class NotificationsService {
           title: 'Nueva nota',
           body: `Nueva nota en ${subjectName}`,
           type: 'grade',
-          link: '/calificaciones',
+          link: `/hijos/${studentId}/notas`,
           student_id: studentId,
         });
       }
@@ -219,7 +219,7 @@ export class NotificationsService {
           title: 'Inasistencia registrada',
           body: `${name} estuvo ausente el ${event.date}`,
           type: 'attendance',
-          link: '/asistencia',
+          link: `/hijos/${studentId}/asistencia`,
           student_id: studentId,
         });
       }

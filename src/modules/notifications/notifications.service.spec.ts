@@ -134,7 +134,7 @@ describe('NotificationsService · grades.saved', () => {
         title: 'Nueva nota',
         body: 'Nueva nota en Matemática',
         type: 'grade',
-        link: '/calificaciones',
+        link: `/hijos/${row.student_id}/notas`,
       });
     }
     expect(rows.map((r) => r.student_id).sort()).toEqual([ST1, ST1, ST2].sort());
@@ -227,7 +227,7 @@ describe('NotificationsService · attendance.saved', () => {
       title: 'Inasistencia registrada',
       body: 'Ana García estuvo ausente el 2026-11-02',
       type: 'attendance',
-      link: '/asistencia',
+      link: `/hijos/${ST1}/asistencia`,
       student_id: ST1,
     });
     expect(rows).toContainEqual({
@@ -236,7 +236,7 @@ describe('NotificationsService · attendance.saved', () => {
       title: 'Inasistencia registrada',
       body: 'Luis Pérez estuvo ausente el 2026-11-02',
       type: 'attendance',
-      link: '/asistencia',
+      link: `/hijos/${ST2}/asistencia`,
       student_id: ST2,
     });
   });
@@ -389,7 +389,7 @@ describe('NotificationsService · list', () => {
       title: 'Nueva nota',
       body: 'Nueva nota en Matemática',
       type: 'grade',
-      link: '/calificaciones',
+      link: `/hijos/${ST1}/notas`,
       student_id: ST1,
       read_at: '2026-11-02T10:30:00Z',
       created_at: '2026-11-02T10:00:00Z',
@@ -434,7 +434,7 @@ describe('NotificationsService · list', () => {
         title: 'Nueva nota',
         body: 'Nueva nota en Matemática',
         type: 'grade',
-        link: '/calificaciones',
+        link: `/hijos/${ST1}/notas`,
         studentId: ST1,
         readAt: '2026-11-02T10:30:00Z',
         createdAt: '2026-11-02T10:00:00Z',
