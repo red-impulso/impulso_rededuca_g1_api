@@ -176,6 +176,19 @@ describe('GradesService · getSheet', () => {
       svc.getSheet(teacher, SUBJECT, PERIOD),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  it('la planilla solo consulta alumnos activos (bajas excluidas)', async () => {
+    const { svc, state } = service({
+      ...baseTables,
+      students: [{ data: roster, error: null }],
+      grades: [{ data: [], error: null }],
+    });
+    await svc.getSheet(teacher, SUBJECT, PERIOD);
+    expect(state.students.calls).toContainEqual({
+      op: 'eq',
+      args: ['status', 'active'],
+    });
+  });
 });
 
 describe('GradesService · saveSheet', () => {

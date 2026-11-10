@@ -307,12 +307,14 @@ export class AttendanceService {
     }
   }
 
+  /** Alumnos activos del curso: los dados de baja no aparecen en la planilla. */
   private async courseStudents(institutionId: string, courseId: string) {
     const { data, error } = await this.supabase.admin
       .from('students')
       .select('id, first_name, last_name')
       .eq('institution_id', institutionId)
       .eq('course_id', courseId)
+      .eq('status', 'active')
       .order('last_name')
       .order('first_name');
     if (error) throw error;
