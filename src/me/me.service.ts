@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Membership } from '../auth/membership.guard.js';
+import { ACTIVE_MEMBERSHIP_STATUSES } from '../modules/memberships/memberships.constants.js';
 import { SupabaseService } from '../supabase/supabase.service.js';
 
 export interface MeResponse {
@@ -23,6 +24,13 @@ export interface TeacherSubject {
   id: string;
   name: string;
   course: CourseSummary;
+}
+
+export interface SchoolMembership {
+  id: string;
+  name: string | null;
+  role: string;
+  status: string;
 }
 
 export interface LinkedStudent {
@@ -66,6 +74,26 @@ export class MeService {
         role: m.role,
       })),
     };
+  }
+
+  /**
+   * Instituciones donde el usuario tiene membresía vigente, para el
+   * selector de escuelas del header (institution-switcher).
+   */
+  async getMySchools(userId: string): Promise<SchoolMembership[]> {
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select('institution_id, role, status, institutions(name)')
+      .eq('user_id', userId)
+      .in('status', [...ACTIVE_MEMBERSHIP_STATUSES]);
+    if (error) throw error;
+
+    return (data ?? []).map((m: any) => ({
+      id: m.institution_id,
+      name: m.institutions?.name ?? null,
+      role: m.role,
+      status: m.status,
+    }));
   }
 
   /** Materias que el docente dicta en la institución activa. */

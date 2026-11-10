@@ -18,6 +18,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { StudentsModule } from './modules/students/students.module.js';
 import { SubjectsModule } from './modules/subjects/subjects.module.js';
 import { TeachersModule } from './modules/teachers/teachers.module.js';
+import { UsersModule } from './modules/users/users.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
 
 @Module({
@@ -37,6 +38,7 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     LeadsModule,
     StudentsModule,
     TeachersModule,
+    UsersModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],

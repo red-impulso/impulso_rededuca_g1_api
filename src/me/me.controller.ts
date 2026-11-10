@@ -17,6 +17,11 @@ export class MeController {
     return this.meService.getMe(req.user.id);
   }
 
+  @Get('schools')
+  getMySchools(@Req() req: AuthenticatedRequest) {
+    return this.meService.getMySchools(req.user.id);
+  }
+
   @Get('subjects')
   @UseGuards(MembershipGuard)
   @Roles('teacher')
