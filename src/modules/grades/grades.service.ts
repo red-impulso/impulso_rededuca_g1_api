@@ -344,6 +344,7 @@ export class GradesService {
         .select('id')
         .eq('guardian_membership_id', membership.id)
         .eq('student_id', student.id)
+        .eq('status', 'active')
         .maybeSingle();
       if (error) throw error;
       if (!data) {

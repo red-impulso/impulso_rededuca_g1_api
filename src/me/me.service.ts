@@ -98,6 +98,7 @@ export class MeService {
         'students!inner(id, first_name, last_name, courses(id, year, division))',
       )
       .eq('guardian_membership_id', membership.id)
+      .eq('status', 'active')
       .eq('students.institution_id', membership.institutionId);
     if (error) throw error;
 

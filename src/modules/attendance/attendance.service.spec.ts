@@ -369,6 +369,26 @@ describe('AttendanceService · getStudentAttendance', () => {
     expect(state.attendance_records?.calls ?? []).toEqual([]);
   });
 
+  it('tutor desvinculado → 403: solo cuentan vínculos con status active', async () => {
+    const { svc, state } = service({
+      students: [{ data: studentRow, error: null }],
+      guardian_links: [{ data: null, error: null }],
+    });
+    await expect(
+      svc.getStudentAttendance(guardian, ST1),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    const linkEqs = state.guardian_links.calls.filter((c) => c.op === 'eq');
+    expect(linkEqs).toContainEqual({ op: 'eq', args: ['status', 'active'] });
+    expect(linkEqs).toContainEqual({
+      op: 'eq',
+      args: ['guardian_membership_id', guardian.id],
+    });
+    expect(linkEqs).toContainEqual({
+      op: 'eq',
+      args: ['student_id', ST1],
+    });
+  });
+
   it('tutor vinculado → registros y resumen', async () => {
     const { svc } = service({
       students: [{ data: studentRow, error: null }],
