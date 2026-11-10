@@ -11,8 +11,10 @@ import { AttendanceModule } from './modules/attendance/attendance.module.js';
 import { CoursesModule } from './modules/courses/courses.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { GradesModule } from './modules/grades/grades.module.js';
+import { InstitutionModule } from './modules/institution/institution.module.js';
 import { LeadsModule } from './modules/leads/leads.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { SubjectsModule } from './modules/subjects/subjects.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
 
 @Module({
@@ -26,6 +28,8 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     NotificationsModule,
     DashboardModule,
     CoursesModule,
+    SubjectsModule,
+    InstitutionModule,
     LeadsModule,
   ],
   controllers: [AppController, HealthController],
