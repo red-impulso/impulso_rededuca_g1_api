@@ -6,6 +6,7 @@ function chain(result: unknown) {
   const q: any = {
     select: () => q,
     eq: () => q,
+    in: () => q,
     maybeSingle: () => Promise.resolve(result),
     then: (res: any, rej: any) => Promise.resolve(result).then(res, rej),
   };
@@ -72,6 +73,39 @@ const guardianMembership = {
   institutionId: 'i1',
   role: 'guardian',
 } as const;
+
+describe('MeService · getMySchools', () => {
+  it('devuelve las instituciones con membresía vigente para el switcher', async () => {
+    const svc = service({
+      memberships: {
+        data: [
+          {
+            institution_id: 'i1',
+            role: 'admin',
+            status: 'active',
+            institutions: { name: 'Escuela 1' },
+          },
+          {
+            institution_id: 'i2',
+            role: 'teacher',
+            status: 'activo',
+            institutions: { name: 'Escuela 2' },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMySchools('u1')).resolves.toEqual([
+      { id: 'i1', name: 'Escuela 1', role: 'admin', status: 'active' },
+      { id: 'i2', name: 'Escuela 2', role: 'teacher', status: 'activo' },
+    ]);
+  });
+
+  it('sin membresías → lista vacía', async () => {
+    const svc = service({ memberships: { data: [], error: null } });
+    await expect(svc.getMySchools('u1')).resolves.toEqual([]);
+  });
+});
 
 describe('MeService · getMySubjects', () => {
   it('devuelve las materias del docente con su curso', async () => {
