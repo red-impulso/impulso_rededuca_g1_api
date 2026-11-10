@@ -174,6 +174,19 @@ describe('AttendanceService · getSheet', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     }
   });
+
+  it('la planilla solo consulta alumnos activos (bajas excluidas)', async () => {
+    const { svc, state } = service({
+      ...teacherBase,
+      students: [{ data: roster, error: null }],
+      attendance_records: [{ data: [], error: null }],
+    });
+    await svc.getSheet(teacher, COURSE, YESTERDAY);
+    expect(state.students.calls).toContainEqual({
+      op: 'eq',
+      args: ['status', 'active'],
+    });
+  });
 });
 
 describe('AttendanceService · saveSheet', () => {

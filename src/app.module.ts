@@ -14,6 +14,7 @@ import { GradesModule } from './modules/grades/grades.module.js';
 import { InstitutionModule } from './modules/institution/institution.module.js';
 import { LeadsModule } from './modules/leads/leads.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { StudentsModule } from './modules/students/students.module.js';
 import { SubjectsModule } from './modules/subjects/subjects.module.js';
 import { SupabaseModule } from './supabase/supabase.module.js';
 
@@ -31,6 +32,7 @@ import { SupabaseModule } from './supabase/supabase.module.js';
     SubjectsModule,
     InstitutionModule,
     LeadsModule,
+    StudentsModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],
