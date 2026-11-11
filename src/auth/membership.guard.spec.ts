@@ -30,7 +30,12 @@ function chain(result: unknown) {
 
 function setup(
   rows: object[],
-  opts: { headers?: object; handler?: object; klass?: object } = {},
+  opts: {
+    headers?: object;
+    handler?: object;
+    klass?: object;
+    tables?: Record<string, unknown>;
+  } = {},
 ) {
   const request: any = {
     headers: opts.headers ?? { 'x-institution-id': INSTITUTION },
@@ -42,7 +47,12 @@ function setup(
     switchToHttp: () => ({ getRequest: () => request }),
   } as unknown as ExecutionContext;
   const guard = new MembershipGuard(
-    { admin: { from: () => chain({ data: rows, error: null }) } } as any,
+    {
+      admin: {
+        from: (t: string) =>
+          chain(opts.tables?.[t] ?? { data: rows, error: null }),
+      },
+    } as any,
     new Reflector(),
   );
   return { guard, context, request };
@@ -70,6 +80,28 @@ describe('MembershipGuard', () => {
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  it('institución suspendida → 403 con mensaje explícito', async () => {
+    const { guard, context } = setup([membershipRow('m1', 'admin')], {
+      tables: {
+        institutions: { data: [{ status: 'suspendida' }], error: null },
+      },
+    });
+    const attempt = guard.canActivate(context);
+    await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(attempt).rejects.toThrow(
+      'Sin acceso: institución suspendida',
+    );
+  });
+
+  it('institución activa → pasa normalmente', async () => {
+    const { guard, context } = setup([membershipRow('m1', 'admin')], {
+      tables: {
+        institutions: { data: [{ status: 'activa' }], error: null },
+      },
+    });
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
   it('rol fuera de @Roles → 403', async () => {

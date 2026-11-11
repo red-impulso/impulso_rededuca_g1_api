@@ -32,6 +32,7 @@ describe('MeService', () => {
             id: 'm1',
             institution_id: 'i1',
             role: 'teacher',
+            status: 'active',
             institutions: {
               name: 'Escuela 1',
               status: 'activa',
@@ -51,11 +52,42 @@ describe('MeService', () => {
           institutionId: 'i1',
           institutionName: 'Escuela 1',
           institutionStatus: 'activa',
+          slug: 'escuela-1',
           city: 'Rosario',
           level: 'Secundario',
           role: 'teacher',
+          status: 'active',
         },
       ],
+    });
+  });
+
+  it('institutionStatus sin valor → default activa y slug normalizado', async () => {
+    const svc = service({
+      profiles: {
+        data: { id: 'u1', full_name: 'Ana Pérez', phone: null },
+        error: null,
+      },
+      memberships: {
+        data: [
+          {
+            id: 'm1',
+            institution_id: 'i1',
+            role: 'admin',
+            status: null,
+            institutions: { name: 'Institución San José' },
+          },
+        ],
+        error: null,
+      },
+    });
+    const result = await svc.getMe('u1');
+    expect(result.memberships[0]).toMatchObject({
+      institutionStatus: 'activa',
+      slug: 'institucion-san-jose',
+      city: null,
+      level: null,
+      status: null,
     });
   });
 
@@ -117,6 +149,7 @@ describe('MeService · getMySchools', () => {
       {
         id: 'i1',
         name: 'Escuela 1',
+        slug: 'escuela-1',
         institutionStatus: 'activa',
         city: 'Rosario',
         level: 'Primario',
@@ -126,11 +159,40 @@ describe('MeService · getMySchools', () => {
       {
         id: 'i2',
         name: 'Escuela 2',
+        slug: 'escuela-2',
         institutionStatus: 'en-implementacion',
         city: null,
         level: 'Secundario',
         role: 'teacher',
         status: 'activo',
+      },
+    ]);
+  });
+
+  it('institutionStatus ausente → default activa', async () => {
+    const svc = service({
+      memberships: {
+        data: [
+          {
+            institution_id: 'i1',
+            role: 'teacher',
+            status: 'active',
+            institutions: { name: 'Escuela 1' },
+          },
+        ],
+        error: null,
+      },
+    });
+    await expect(svc.getMySchools('u1')).resolves.toEqual([
+      {
+        id: 'i1',
+        name: 'Escuela 1',
+        slug: 'escuela-1',
+        institutionStatus: 'activa',
+        city: null,
+        level: null,
+        role: 'teacher',
+        status: 'active',
       },
     ]);
   });

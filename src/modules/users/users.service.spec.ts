@@ -549,6 +549,71 @@ describe('UsersService · create', () => {
   });
 });
 
+describe('UsersService · detail (GET /users/:userId)', () => {
+  const U_T1 = 'cccccccc-0000-0000-0000-000000000001';
+  const detailRow = {
+    ...memberRow,
+    user_id: U_T1,
+    blocked_reason: null,
+    profiles: {
+      ...memberRow.profiles,
+      id: U_T1,
+      first_name: null,
+      dni: null,
+    },
+  };
+
+  it('devuelve la ficha del usuario con claves explícitas (nulls)', async () => {
+    const { svc } = service(
+      {
+        memberships: [
+          { data: { id: M1 }, error: null },
+          { data: detailRow, error: null },
+        ],
+      },
+      [{ id: U_T1, email: 'laura@mail.com', last_sign_in_at: null }],
+    );
+    await expect(svc.detail(admin, U_T1)).resolves.toEqual({
+      membershipId: M1,
+      userId: U_T1,
+      role: 'teacher',
+      status: 'active',
+      blockedReason: null,
+      profile: {
+        id: U_T1,
+        fullName: 'Laura Pérez',
+        firstName: null,
+        lastName: 'Pérez',
+        dni: null,
+        phone: '1155667788',
+      },
+      email: 'laura@mail.com',
+      lastAccess: '2026-02-01T00:00:00Z',
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+  });
+
+  it('director también puede consultar el detalle', async () => {
+    const { svc } = service({
+      memberships: [
+        { data: { id: M1 }, error: null },
+        { data: detailRow, error: null },
+      ],
+    });
+    await expect(svc.detail(director, U_T1)).resolves.toMatchObject({
+      membershipId: M1,
+      role: 'teacher',
+    });
+  });
+
+  it('usuario sin membresía en la institución → 404', async () => {
+    const { svc } = service({ memberships: [{ data: null, error: null }] });
+    await expect(svc.detail(admin, U_T1)).rejects.toThrow(
+      'Usuario no encontrado',
+    );
+  });
+});
+
 describe('UsersService · counts (GET /users/counts)', () => {
   it('devuelve all, active, pending, blocked e inactive', async () => {
     const { svc } = service({

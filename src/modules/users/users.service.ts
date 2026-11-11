@@ -178,6 +178,25 @@ export class UsersService {
   }
 
   /**
+   * Detalle de un usuario de la institución activa (por user_id): mismos
+   * campos que el ítem del listado, con claves explícitas aunque estén
+   * vacías. Rechaza con 404 si no tiene membresía en la institución.
+   */
+  async detail(membership: Membership, userId: string): Promise<UserListItem> {
+    this.assertStaff(membership);
+    const target = await this.membershipByUser(membership, userId);
+
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select(USER_COLUMNS)
+      .eq('id', target.id)
+      .single();
+    if (error) throw error;
+    const authInfo = await this.authInfoByUserId([userId]);
+    return mapItem(data, authInfo.get(userId));
+  }
+
+  /**
    * Edita los datos del usuario (perfil y email de acceso). Rechaza con
    * 404 si el usuario no tiene membresía en la institución activa.
    */
@@ -186,7 +205,7 @@ export class UsersService {
     userId: string,
     dto: UpdateUserDto,
   ): Promise<UserListItem> {
-    this.assertAdmin(membership);
+    this.assertStaff(membership);
     const target = await this.membershipByUser(membership, userId);
     const { profileChanges, email } = this.validateUpdate(dto);
 

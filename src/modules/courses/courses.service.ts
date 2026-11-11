@@ -18,10 +18,10 @@ import type { UpdateCourseDto } from './dto/update-course.dto.js';
 export interface CourseListItem {
   id: string;
   name: string;
-  year?: number;
-  division?: string;
-  shift?: string | null;
-  schoolYear?: number;
+  year: number | null;
+  division: string | null;
+  shift: string | null;
+  schoolYear: number | null;
   status: string;
   classroom: string | null;
   studentsCount: number;
@@ -451,10 +451,10 @@ function mapCourse(
   return {
     id: c.id,
     name: c.name,
-    year: c.year,
-    division: c.division,
+    year: c.year ?? null,
+    division: c.division ?? null,
     shift: c.shift ?? null,
-    schoolYear: c.school_year,
+    schoolYear: c.school_year ?? null,
     status: c.status ?? 'active',
     classroom: c.classroom ?? null,
     studentsCount,

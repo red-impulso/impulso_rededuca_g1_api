@@ -9,10 +9,12 @@ export interface MeResponse {
     id: string;
     institutionId: string;
     institutionName: string;
-    institutionStatus: string | null;
+    institutionStatus: string;
+    slug: string | null;
     city: string | null;
     level: string | null;
     role: string;
+    status: string | null;
   }[];
 }
 
@@ -32,7 +34,8 @@ export interface TeacherSubject {
 export interface SchoolMembership {
   id: string;
   name: string | null;
-  institutionStatus: string | null;
+  slug: string | null;
+  institutionStatus: string;
   city: string | null;
   level: string | null;
   role: string;
@@ -63,7 +66,9 @@ export class MeService {
 
     const { data: rows, error: membershipsError } = await db
       .from('memberships')
-      .select('id, institution_id, role, institutions(name, status, city, level)')
+      .select(
+        'id, institution_id, role, status, institutions(name, status, city, level)',
+      )
       .eq('user_id', userId);
     if (membershipsError) throw membershipsError;
 
@@ -77,10 +82,12 @@ export class MeService {
         id: m.id,
         institutionId: m.institution_id,
         institutionName: m.institutions?.name ?? null,
-        institutionStatus: m.institutions?.status ?? null,
+        institutionStatus: m.institutions?.status ?? 'activa',
+        slug: slugify(m.institutions?.name),
         city: m.institutions?.city ?? null,
         level: m.institutions?.level ?? null,
         role: m.role,
+        status: m.status ?? null,
       })),
     };
   }
@@ -100,7 +107,8 @@ export class MeService {
     return (data ?? []).map((m: any) => ({
       id: m.institution_id,
       name: m.institutions?.name ?? null,
-      institutionStatus: m.institutions?.status ?? null,
+      slug: slugify(m.institutions?.name),
+      institutionStatus: m.institutions?.status ?? 'activa',
       city: m.institutions?.city ?? null,
       level: m.institutions?.level ?? null,
       role: m.role,
@@ -168,6 +176,22 @@ export class MeService {
     if (error) throw error;
     return data ?? [];
   }
+}
+
+/**
+ * Slug de la institución para el switcher del frontend: nombre
+ * normalizado en minúsculas, sin tildes y con guiones.
+ */
+function slugify(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const slug = name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || null;
 }
 
 function toCourseSummary(c: any): CourseSummary {

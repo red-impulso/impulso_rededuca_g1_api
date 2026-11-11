@@ -75,6 +75,14 @@ export class UsersController {
     });
   }
 
+  @Get(':userId')
+  detail(
+    @CurrentMembership() membership: Membership,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ) {
+    return this.users.detail(membership, userId);
+  }
+
   @Post()
   @UsePipes(new ValidationPipe({ whitelist: true }))
   create(

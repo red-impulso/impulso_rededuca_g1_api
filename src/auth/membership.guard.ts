@@ -62,6 +62,21 @@ export class MembershipGuard implements CanActivate {
     if (error) throw error;
     if (!rows?.length) throw new ForbiddenException();
 
+    const instResult = (await this.supabase.admin
+      .from('institutions')
+      .select('status')
+      .eq('id', institutionId)) as
+      | { data?: { status?: string }[] | { status?: string }; error?: unknown }
+      | undefined;
+    if (instResult?.error) throw instResult.error;
+    const instData = instResult?.data;
+    const institutionStatus = Array.isArray(instData)
+      ? instData[0]?.status
+      : instData?.status;
+    if (institutionStatus === 'suspendida') {
+      throw new ForbiddenException('Sin acceso: institución suspendida');
+    }
+
     const row = rows.reduce((a: any, b: any) =>
       ROLE_RANK[b.role as Role] < ROLE_RANK[a.role as Role] ? b : a,
     );

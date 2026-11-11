@@ -23,7 +23,7 @@ import { MembershipsService } from './memberships.service.js';
 
 @Controller('memberships')
 @UseGuards(AuthGuard, MembershipGuard)
-@Roles('admin')
+@Roles('admin', 'director')
 export class MembershipsController {
   constructor(private readonly memberships: MembershipsService) {}
 

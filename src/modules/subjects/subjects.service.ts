@@ -23,7 +23,7 @@ export interface SubjectItem {
     year: number | null;
     division: string | null;
     shift: string | null;
-    schoolYear: number;
+    schoolYear: number | null;
   } | null;
   teacher: { id: string; fullName: string | null } | null;
 }
@@ -401,7 +401,7 @@ export class SubjectsService {
             year: course.year ?? null,
             division: course.division ?? null,
             shift: course.shift ?? null,
-            schoolYear: course.school_year,
+            schoolYear: course.school_year ?? null,
           }
         : null,
       teacher: teacherId ? (teachers.get(teacherId) ?? { id: teacherId, fullName: null }) : null,
