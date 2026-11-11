@@ -194,6 +194,8 @@ describe('TeachersController + SubjectTeacherController + CourseAssignmentsContr
         'titular',
         COURSE,
         SUBJ,
+        'morning',
+        'name',
         2,
         10,
       ),
@@ -204,6 +206,8 @@ describe('TeachersController + SubjectTeacherController + CourseAssignmentsContr
       employmentStatus: 'titular',
       courseId: COURSE,
       subjectId: SUBJ,
+      shift: 'morning',
+      sort: 'name',
       page: 2,
       limit: 10,
     });
@@ -218,6 +222,8 @@ describe('TeachersController + SubjectTeacherController + CourseAssignmentsContr
       employmentStatus: undefined,
       courseId: undefined,
       subjectId: undefined,
+      shift: undefined,
+      sort: undefined,
       page: 1,
       limit: 25,
     });

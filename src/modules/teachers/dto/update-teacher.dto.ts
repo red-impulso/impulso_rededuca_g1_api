@@ -1,5 +1,6 @@
 import {
   IsDateString,
+  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -22,6 +23,24 @@ export const TEACHER_STATUSES = ['activo', 'licencia', 'inactivo'] as const;
 export type TeacherStatus = (typeof TEACHER_STATUSES)[number];
 
 export class UpdateTeacherDto {
+  /** Nombre completo del docente (actualiza profiles.full_name). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  fullName?: string;
+
+  /** Email de acceso (actualiza auth.users). */
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(120)
+  email?: string;
+
+  /** Teléfono del docente (actualiza profiles.phone). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
+
   /** Legajo interno del docente (ej. 'L-1042'). */
   @IsOptional()
   @IsString()

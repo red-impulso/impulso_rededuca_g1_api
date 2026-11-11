@@ -93,6 +93,27 @@ export class MembershipsService {
     if (error) throw error;
   }
 
+  /**
+   * Reactiva una membresía dada de baja lógica: status vuelve a 'active'
+   * y se limpia el motivo de bloqueo. Solo admin; 404 si la membresía no
+   * pertenece a la institución activa.
+   */
+  async reactivate(membership: Membership, id: string): Promise<void> {
+    this.assertAdmin(membership);
+    await this.membershipFor(membership, id);
+
+    const { error } = await this.supabase.admin
+      .from('memberships')
+      .update({
+        status: 'active',
+        blocked_reason: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('institution_id', membership.institutionId);
+    if (error) throw error;
+  }
+
   /** Solo admin puede administrar usuarios y roles. */
   private assertAdmin(membership: Membership) {
     if (membership.role !== 'admin') {

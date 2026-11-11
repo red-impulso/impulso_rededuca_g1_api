@@ -3,9 +3,11 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Membership } from '../../auth/membership.guard.js';
+import { storeExport, toCsv } from '../../common/export-storage.js';
 import { SupabaseService } from '../../supabase/supabase.service.js';
 import {
   MEMBERSHIP_ROLES,
@@ -13,6 +15,7 @@ import {
   type MembershipRole,
 } from '../memberships/memberships.constants.js';
 import type { CreateUserDto } from './dto/create-user.dto.js';
+import type { UpdateUserDto } from './dto/update-user.dto.js';
 
 export interface UserProfileSummary {
   id: string;
@@ -28,10 +31,19 @@ export interface UserListItem {
   userId: string;
   role: string;
   status: string;
+  blockedReason: string | null;
   profile: UserProfileSummary;
   email: string | null;
   lastAccess: string | null;
   createdAt: string;
+}
+
+export interface UserCounts {
+  all: number;
+  active: number;
+  pending: number;
+  blocked: number;
+  inactive: number;
 }
 
 export interface UserListResult {
@@ -56,9 +68,18 @@ export interface ListUsersParams {
   q?: string;
   role?: string;
   status?: string;
+  lastAccess?: string;
   page?: number;
   limit?: number;
 }
+
+export const LAST_ACCESS_FILTERS = [
+  'today',
+  '7d',
+  '30d',
+  '90d+',
+  'never',
+] as const;
 
 interface AuthInfo {
   email: string | null;
@@ -71,7 +92,7 @@ const ALREADY_MEMBER_MSG =
   'El usuario ya es miembro de esta institución';
 
 const USER_COLUMNS =
-  'id, user_id, role, status, created_at, updated_at, profiles!inner(id, full_name, first_name, last_name, dni, phone)';
+  'id, user_id, role, status, blocked_reason, created_at, updated_at, profiles!inner(id, full_name, first_name, last_name, dni, phone)';
 
 @Injectable()
 export class UsersService {
@@ -87,8 +108,9 @@ export class UsersService {
     membership: Membership,
     params: ListUsersParams = {},
   ): Promise<UserListResult> {
-    this.assertAdmin(membership);
-    const { role, status, page, limit } = this.validateListParams(params);
+    this.assertStaff(membership);
+    const { role, status, lastAccess, page, limit } =
+      this.validateListParams(params);
     const term = this.searchTerm(params.q);
     const institutionId = membership.institutionId;
 
@@ -107,7 +129,10 @@ export class UsersService {
     }
 
     const from = (page - 1) * limit;
-    const { data, count, error } = await query.range(from, from + limit - 1);
+    // El filtro por último acceso depende de auth.users: se resuelve en
+    // memoria, así que se omite la paginación en base y se recorta después.
+    if (!lastAccess) query = query.range(from, from + limit - 1);
+    const { data, count, error } = await query;
     if (error) throw error;
 
     const rows = data ?? [];
@@ -115,12 +140,169 @@ export class UsersService {
       unique(rows.map((r: any) => r.user_id as string)),
     );
 
-    return {
-      data: rows.map((r: any) => mapItem(r, authInfo.get(r.user_id))),
-      total: count ?? rows.length,
-      page,
-      limit,
+    let items = rows.map((r: any) => mapItem(r, authInfo.get(r.user_id)));
+    let total = count ?? rows.length;
+    if (lastAccess) {
+      items = items.filter((item) =>
+        matchesLastAccess(authInfo.get(item.userId)?.lastSignInAt ?? null, lastAccess),
+      );
+      total = items.length;
+      items = items.slice(from, from + limit);
+    }
+
+    return { data: items, total, page, limit };
+  }
+
+  /** Conteo de usuarios por estado de membresía para las solapas. */
+  async counts(membership: Membership): Promise<UserCounts> {
+    this.assertStaff(membership);
+    const institutionId = membership.institutionId;
+    const count = async (status?: string) => {
+      let query = this.supabase.admin
+        .from('memberships')
+        .select('id', { count: 'exact', head: true })
+        .eq('institution_id', institutionId);
+      if (status) query = query.eq('status', status);
+      const { count: total, error } = await query;
+      if (error) throw error;
+      return total ?? 0;
     };
+    const [all, active, pending, blocked, inactive] = await Promise.all([
+      count(),
+      count('active'),
+      count('pending'),
+      count('blocked'),
+      count('inactive'),
+    ]);
+    return { all, active, pending, blocked, inactive };
+  }
+
+  /**
+   * Edita los datos del usuario (perfil y email de acceso). Rechaza con
+   * 404 si el usuario no tiene membresía en la institución activa.
+   */
+  async update(
+    membership: Membership,
+    userId: string,
+    dto: UpdateUserDto,
+  ): Promise<UserListItem> {
+    this.assertAdmin(membership);
+    const target = await this.membershipByUser(membership, userId);
+    const { profileChanges, email } = this.validateUpdate(dto);
+
+    if (email !== undefined) {
+      await this.updateAuthEmail(userId, email);
+    }
+    if (Object.keys(profileChanges).length) {
+      const { error } = await this.supabase.admin
+        .from('profiles')
+        .update(profileChanges)
+        .eq('id', userId);
+      if (error) throw error;
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select(USER_COLUMNS)
+      .eq('id', target.id)
+      .single();
+    if (error) throw error;
+    const authInfo = await this.authInfoByUserId([userId]);
+    const item = mapItem(data, authInfo.get(userId));
+    if (email) item.email = email;
+    return item;
+  }
+
+  /**
+   * Envía el email de restablecimiento de contraseña al usuario. Siempre
+   * responde sin contenido: los fallos del envío no se propagan.
+   */
+  async resetPassword(membership: Membership, userId: string): Promise<void> {
+    this.assertAdmin(membership);
+    await this.membershipByUser(membership, userId);
+
+    try {
+      const { data, error } = await this.supabase.admin.auth.admin
+        .getUserById(userId);
+      if (error || !data?.user?.email) return;
+      await (this.supabase.admin.auth as any).resetPasswordForEmail(
+        data.user.email,
+      );
+    } catch {
+      // El endpoint responde 204 aunque el envío falle.
+    }
+  }
+
+  /**
+   * Exporta usuarios de la institución (todos o las membresías indicadas)
+   * a CSV y devuelve el enlace de descarga.
+   */
+  async exportCsv(
+    membership: Membership,
+    membershipIds?: string[],
+  ): Promise<{ url: string }> {
+    this.assertStaff(membership);
+    const institutionId = membership.institutionId;
+    const cleanIds = (membershipIds ?? []).filter((id) =>
+      /^[0-9a-f-]{36}$/i.test(id),
+    );
+
+    let query = this.supabase.admin
+      .from('memberships')
+      .select(USER_COLUMNS)
+      .eq('institution_id', institutionId)
+      .order('full_name', { referencedTable: 'profiles' });
+    if (cleanIds.length) query = query.in('id', cleanIds);
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const rows = data ?? [];
+    const authInfo = await this.authInfoByUserId(
+      unique(rows.map((r: any) => r.user_id as string)),
+    );
+
+    const csv = toCsv(
+      [
+        'membershipId',
+        'userId',
+        'fullName',
+        'firstName',
+        'lastName',
+        'dni',
+        'email',
+        'phone',
+        'role',
+        'status',
+        'blockedReason',
+        'lastAccess',
+        'createdAt',
+      ],
+      rows.map((r: any) => {
+        const item = mapItem(r, authInfo.get(r.user_id));
+        return [
+          item.membershipId,
+          item.userId,
+          item.profile.fullName,
+          item.profile.firstName,
+          item.profile.lastName,
+          item.profile.dni,
+          item.email,
+          item.profile.phone,
+          item.role,
+          item.status,
+          item.blockedReason,
+          item.lastAccess,
+          item.createdAt,
+        ];
+      }),
+    );
+    const url = await storeExport(
+      this.supabase.admin,
+      `users/${institutionId}-${Date.now()}.csv`,
+      csv,
+      'text/csv',
+    );
+    return { url };
   }
 
   /**
@@ -188,6 +370,95 @@ export class UsersService {
     };
   }
 
+  /**
+   * Membresía del usuario en la institución activa (cualquier rol), o 404.
+   * Usada para operaciones dirigidas por user_id.
+   */
+  private async membershipByUser(membership: Membership, userId: string) {
+    if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+      throw new BadRequestException('userId inválido');
+    }
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select('id')
+      .eq('institution_id', membership.institutionId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new NotFoundException('Usuario no encontrado');
+    return data;
+  }
+
+  /** Valida la edición y separa cambios de perfil y de auth. */
+  private validateUpdate(dto: UpdateUserDto) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('El cuerpo es obligatorio');
+    }
+    const profileChanges: Record<string, unknown> = {};
+    let email: string | undefined;
+
+    const text = (v: unknown): string | null =>
+      v === undefined || v === null ? null : String(v).trim() || null;
+
+    const firstName =
+      dto.firstName !== undefined ? dto.firstName?.trim() : undefined;
+    const lastName =
+      dto.lastName !== undefined ? dto.lastName?.trim() : undefined;
+    if (dto.fullName !== undefined && !dto.fullName.trim()) {
+      throw new BadRequestException('fullName no puede estar vacío');
+    }
+    if (dto.firstName !== undefined && dto.firstName !== null && !firstName) {
+      throw new BadRequestException('firstName no puede estar vacío');
+    }
+    if (dto.lastName !== undefined && dto.lastName !== null && !lastName) {
+      throw new BadRequestException('lastName no puede estar vacío');
+    }
+
+    if (firstName !== undefined) profileChanges.first_name = firstName;
+    if (lastName !== undefined) profileChanges.last_name = lastName;
+    if (dto.fullName !== undefined) {
+      profileChanges.full_name = dto.fullName.trim();
+    } else if (firstName !== undefined || lastName !== undefined) {
+      profileChanges.full_name =
+        `${firstName ?? ''} ${lastName ?? ''}`.trim() || null;
+    }
+    if (dto.dni !== undefined) profileChanges.dni = text(dto.dni);
+    if (dto.phone !== undefined) profileChanges.phone = text(dto.phone);
+    if (dto.email !== undefined) email = dto.email.trim().toLowerCase();
+
+    if (!Object.keys(profileChanges).length && email === undefined) {
+      throw new BadRequestException(
+        'Debe enviar al menos un campo para actualizar',
+      );
+    }
+    return { profileChanges, email };
+  }
+
+  /** Actualiza el email del usuario en auth; 400 si la API lo rechaza. */
+  private async updateAuthEmail(userId: string, email: string) {
+    try {
+      const { error } = await this.supabase.admin.auth.admin.updateUserById(
+        userId,
+        { email },
+      );
+      if (error) {
+        throw new BadRequestException('No se pudo actualizar el email');
+      }
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException('No se pudo actualizar el email');
+    }
+  }
+
+  /** Lectura: admin y director pueden consultar usuarios. */
+  private assertStaff(membership: Membership) {
+    if (membership.role !== 'admin' && membership.role !== 'director') {
+      throw new ForbiddenException(
+        'Solo admin o director pueden consultar usuarios',
+      );
+    }
+  }
+
   /** Solo admin puede administrar usuarios y roles. */
   private assertAdmin(membership: Membership) {
     if (membership.role !== 'admin') {
@@ -211,7 +482,9 @@ export class UsersService {
       await this.supabase.admin
         .from('profiles')
         .select('id')
-        .or(`full_name.ilike.%${term}%,dni.ilike.%${term}%`);
+        .or(
+          `full_name.ilike.%${term}%,dni.ilike.%${term}%,dni.ilike.%${term.replace(/[\s.]/g, '')}%`,
+        );
     if (profilesError) throw profilesError;
 
     const userIds = new Set<string>(
@@ -338,7 +611,16 @@ export class UsersService {
         "status debe ser 'active', 'inactive', 'pending' o 'blocked'",
       );
     }
-    return { role, status, page, limit };
+    const lastAccess = params.lastAccess || undefined;
+    if (
+      lastAccess !== undefined &&
+      !(LAST_ACCESS_FILTERS as readonly string[]).includes(lastAccess)
+    ) {
+      throw new BadRequestException(
+        "lastAccess debe ser 'today', '7d', '30d', '90d+' o 'never'",
+      );
+    }
+    return { role, status, lastAccess, page, limit };
   }
 
   private validateCreate(dto: CreateUserDto) {
@@ -393,6 +675,7 @@ function mapItem(r: any, auth: AuthInfo | undefined): UserListItem {
     userId: r.user_id,
     role: r.role,
     status: r.status,
+    blockedReason: r.blocked_reason ?? null,
     profile: profileSummary(r.user_id, profileOf(r)),
     email: auth?.email ?? null,
     lastAccess: auth?.lastSignInAt ?? r.updated_at ?? r.created_at,
@@ -431,4 +714,33 @@ function optString(v: unknown): string | undefined {
 
 function unique<T>(values: (T | null | undefined)[]): T[] {
   return [...new Set(values.filter((v): v is T => v != null))];
+}
+
+/**
+ * Aplica el filtro de último acceso sobre last_sign_in_at de auth.users:
+ * today | 7d | 30d | 90d+ (más de 90 días sin entrar) | never.
+ */
+function matchesLastAccess(
+  lastSignInAt: string | null,
+  filter: string,
+): boolean {
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  if (filter === 'never') return !lastSignInAt;
+  if (!lastSignInAt) return false;
+  const ts = Date.parse(lastSignInAt);
+  if (Number.isNaN(ts)) return false;
+  if (filter === 'today') {
+    const date = new Date(ts);
+    const today = new Date(now);
+    return (
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth() &&
+      date.getDate() === today.getDate()
+    );
+  }
+  if (filter === '7d') return now - ts <= 7 * DAY;
+  if (filter === '30d') return now - ts <= 30 * DAY;
+  if (filter === '90d+') return now - ts > 90 * DAY;
+  return false;
 }

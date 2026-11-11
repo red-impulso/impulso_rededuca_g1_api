@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type { Membership } from '../../auth/membership.guard.js';
+import type { CreateUserDto } from './dto/create-user.dto.js';
 import { UsersService } from './users.service.js';
 
 interface TableMock {
@@ -120,6 +121,13 @@ const teacher: Membership = {
   role: 'teacher',
 };
 
+const guardian: Membership = {
+  id: 'mG',
+  userId: 'uG',
+  institutionId: INST,
+  role: 'guardian',
+};
+
 const memberRow = {
   id: M1,
   user_id: 'uT1',
@@ -139,8 +147,8 @@ const memberRow = {
 
 describe('UsersService · list', () => {
   it.each([
-    ['director', director],
     ['teacher', teacher],
+    ['guardian', guardian],
   ])('rol %s → 403 sin consultar la base', async (_n, member) => {
     const { svc, state } = service({});
     await expect(svc.list(member, {})).rejects.toBeInstanceOf(
@@ -170,6 +178,7 @@ describe('UsersService · list', () => {
           userId: 'uT1',
           role: 'teacher',
           status: 'active',
+          blockedReason: null,
           profile: {
             id: 'uT1',
             fullName: 'Laura Pérez',
@@ -231,7 +240,7 @@ describe('UsersService · list', () => {
 
     expect(state.profiles.calls).toContainEqual({
       op: 'or',
-      args: ['full_name.ilike.%lau%,dni.ilike.%lau%'],
+      args: ['full_name.ilike.%lau%,dni.ilike.%lau%,dni.ilike.%lau%'],
     });
     expect(state.memberships.calls).toContainEqual({
       op: 'in',
@@ -523,7 +532,7 @@ describe('UsersService · create', () => {
   ])('dato inválido: %s → 400', async (_n, bad) => {
     const { svc } = service({});
     await expect(
-      svc.create(admin, { ...dto, ...bad }),
+      svc.create(admin, { ...dto, ...bad } as CreateUserDto),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -537,5 +546,26 @@ describe('UsersService · create', () => {
     );
     expect(listUsers).not.toHaveBeenCalled();
     expect(state.memberships?.calls ?? []).toEqual([]);
+  });
+});
+
+describe('UsersService · counts (GET /users/counts)', () => {
+  it('devuelve all, active, pending, blocked e inactive', async () => {
+    const { svc } = service({
+      memberships: [
+        { data: null, count: 20, error: null },
+        { data: null, count: 15, error: null },
+        { data: null, count: 2, error: null },
+        { data: null, count: 1, error: null },
+        { data: null, count: 2, error: null },
+      ],
+    });
+    await expect(svc.counts(admin)).resolves.toEqual({
+      all: 20,
+      active: 15,
+      pending: 2,
+      blocked: 1,
+      inactive: 2,
+    });
   });
 });

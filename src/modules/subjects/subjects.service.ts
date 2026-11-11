@@ -12,6 +12,11 @@ import type { UpdateSubjectDto } from './dto/update-subject.dto.js';
 export interface SubjectItem {
   id: string;
   name: string;
+  description: string | null;
+  status: string;
+  weeklyHours: number;
+  studentsCount: number;
+  updatedAt: string | null;
   course: {
     id: string;
     name: string;
@@ -26,8 +31,10 @@ export interface SubjectItem {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const DEFAULT_WEEKLY_HOURS = 4;
+
 const SUBJECT_COLUMNS =
-  'id, name, course_id, teacher_membership_id, courses!inner(id, name, year, division, shift, school_year, institution_id)';
+  'id, name, description, status, weekly_hours, updated_at, course_id, teacher_membership_id, courses!inner(id, name, year, division, shift, school_year, institution_id)';
 
 @Injectable()
 export class SubjectsService {
@@ -57,10 +64,38 @@ export class SubjectsService {
     if (error) throw error;
 
     const rows = data ?? [];
-    const teachers = await this.teachersById(
-      unique(rows.map((r: any) => r.teacher_membership_id)),
+    const [teachers, counts] = await Promise.all([
+      this.teachersById(unique(rows.map((r: any) => r.teacher_membership_id))),
+      this.studentsByCourse(
+        membership.institutionId,
+        unique(rows.map((r: any) => r.course_id)),
+      ),
+    ]);
+    return rows.map((r: any) =>
+      this.toItem(r, teachers, counts.get(r.course_id) ?? 0),
     );
-    return rows.map((r: any) => this.toItem(r, teachers));
+  }
+
+  /** Detalle completo de una materia de la institución activa. */
+  async detail(membership: Membership, id: string): Promise<SubjectItem> {
+    this.assertStaff(membership);
+    if (typeof id !== 'string' || !UUID_RE.test(id)) {
+      throw new BadRequestException('id de materia inválido');
+    }
+    const { data, error } = await this.supabase.admin
+      .from('subjects')
+      .select(SUBJECT_COLUMNS)
+      .eq('id', id)
+      .eq('courses.institution_id', membership.institutionId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new NotFoundException('Materia no encontrada');
+
+    const [teachers, counts] = await Promise.all([
+      this.teachersById(unique([data.teacher_membership_id])),
+      this.studentsByCourse(membership.institutionId, [data.course_id]),
+    ]);
+    return this.toItem(data, teachers, counts.get(data.course_id) ?? 0);
   }
 
   /** Crea una materia en un curso de la institución activa. */
@@ -81,6 +116,8 @@ export class SubjectsService {
     const teacher = dto.teacherMembershipId
       ? await this.teacherFor(membership, dto.teacherMembershipId)
       : null;
+    const weeklyHours = this.optionalWeeklyHours(dto.weeklyHours);
+    const description = this.optionalText(dto.description, 'description');
 
     const { data, error } = await this.supabase.admin
       .from('subjects')
@@ -88,18 +125,27 @@ export class SubjectsService {
         course_id: course.id,
         name,
         teacher_membership_id: teacher?.id ?? null,
+        ...(weeklyHours !== undefined ? { weekly_hours: weeklyHours } : {}),
+        ...(description !== undefined ? { description } : {}),
       })
       .select(SUBJECT_COLUMNS)
       .single();
     if (error) throw error;
 
+    const counts = await this.studentsByCourse(membership.institutionId, [
+      data.course_id,
+    ]);
     return this.toItem(
       data,
       new Map(teacher ? [[teacher.id, teacher]] : []),
+      counts.get(data.course_id) ?? 0,
     );
   }
 
-  /** Actualiza el nombre o el docente asignado de una materia. */
+  /**
+   * Actualiza el nombre, docente, carga horaria, descripción o estado de
+   * una materia de la institución activa.
+   */
   async update(
     membership: Membership,
     id: string,
@@ -126,6 +172,18 @@ export class SubjectsService {
         patch.teacher_membership_id = teacher.id;
       }
     }
+    if (dto?.weeklyHours !== undefined) {
+      patch.weekly_hours = this.requiredWeeklyHours(dto.weeklyHours);
+    }
+    if (dto?.description !== undefined) {
+      patch.description = this.optionalText(dto.description, 'description');
+    }
+    if (dto?.status !== undefined) {
+      if (!['active', 'inactive'].includes(dto.status)) {
+        throw new BadRequestException("status debe ser 'active' o 'inactive'");
+      }
+      patch.status = dto.status;
+    }
     if (!Object.keys(patch).length) {
       throw new BadRequestException(
         'Debe enviar al menos un campo para actualizar',
@@ -134,19 +192,24 @@ export class SubjectsService {
 
     const { data, error } = await this.supabase.admin
       .from('subjects')
-      .update(patch)
+      .update({ ...patch, updated_at: new Date().toISOString() })
       .eq('id', id)
       .select(SUBJECT_COLUMNS)
       .single();
     if (error) throw error;
 
-    const teachers =
+    const [teachers, counts] = await Promise.all([
       teacher === undefined
-        ? await this.teachersById(
-            unique([data.teacher_membership_id]),
-          )
-        : new Map(teacher ? [[teacher.id, teacher]] : []);
-    return this.toItem(data, teachers);
+        ? this.teachersById(unique([data.teacher_membership_id]))
+        : Promise.resolve(
+            new Map(teacher ? [[teacher.id, teacher]] : []) as Map<
+              string,
+              { id: string; fullName: string | null }
+            >,
+          ),
+      this.studentsByCourse(membership.institutionId, [data.course_id]),
+    ]);
+    return this.toItem(data, teachers, counts.get(data.course_id) ?? 0);
   }
 
   /** Elimina una materia de la institución activa. */
@@ -266,15 +329,71 @@ export class SubjectsService {
     return map;
   }
 
+  /** Alumnos activos por curso (para studentsCount de cada materia). */
+  private async studentsByCourse(
+    institutionId: string,
+    courseIds: string[],
+  ): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (!courseIds.length) return counts;
+    const { data, error } = await this.supabase.admin
+      .from('students')
+      .select('course_id')
+      .eq('institution_id', institutionId)
+      .eq('status', 'active')
+      .in('course_id', courseIds);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      const id = row.course_id as string;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /** Carga horaria opcional en el alta; undefined conserva el default. */
+  private optionalWeeklyHours(value: unknown): number | undefined {
+    if (value === undefined || value === null) return undefined;
+    return this.requiredWeeklyHours(value);
+  }
+
+  private requiredWeeklyHours(value: unknown): number {
+    if (
+      typeof value !== 'number' ||
+      !Number.isInteger(value) ||
+      value < 0 ||
+      value > 80
+    ) {
+      throw new BadRequestException(
+        'weeklyHours debe ser un entero entre 0 y 80',
+      );
+    }
+    return value;
+  }
+
+  private optionalText(value: unknown, field: string): string | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`${field} debe ser texto`);
+    }
+    return value.trim() || null;
+  }
+
   private toItem(
     row: any,
     teachers: Map<string, { id: string; fullName: string | null }>,
+    studentsCount: number,
   ): SubjectItem {
     const course = Array.isArray(row.courses) ? row.courses[0] : row.courses;
     const teacherId = row.teacher_membership_id;
+    const weekly = Number(row.weekly_hours);
     return {
       id: row.id,
       name: row.name,
+      description: row.description ?? null,
+      status: row.status ?? 'active',
+      weeklyHours: Number.isFinite(weekly) ? weekly : DEFAULT_WEEKLY_HOURS,
+      studentsCount,
+      updatedAt: row.updated_at ?? null,
       course: course
         ? {
             id: course.id,

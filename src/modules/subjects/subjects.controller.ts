@@ -38,6 +38,14 @@ export class SubjectsController {
     return this.subjects.list(membership, courseId);
   }
 
+  @Get(':id')
+  detail(
+    @CurrentMembership() membership: Membership,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.subjects.detail(membership, id);
+  }
+
   @Post()
   @HttpCode(201)
   @UsePipes(new ValidationPipe({ whitelist: true }))

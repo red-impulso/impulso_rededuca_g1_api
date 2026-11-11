@@ -7,6 +7,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
 import {
   STUDENT_GENDERS,
@@ -14,6 +15,9 @@ import {
   type StudentGender,
   type StudentStatus,
 } from './create-student.dto.js';
+
+/** Permite null explícito para borrar el campo opcional en la base. */
+const nullable = () => ValidateIf((_o, v) => v !== null && v !== undefined);
 
 export class UpdateStudentDto {
   @IsOptional()
@@ -29,15 +33,17 @@ export class UpdateStudentDto {
   lastName?: string;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @IsNotEmpty()
   @MaxLength(20)
-  dni?: string;
+  dni?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @MaxLength(40)
-  fileNumber?: string;
+  fileNumber?: string | null;
 
   /** Cambia al alumno de curso dentro de la misma institución. */
   @IsOptional()
@@ -45,43 +51,51 @@ export class UpdateStudentDto {
   courseId?: string;
 
   @IsOptional()
+  @nullable()
   @IsDateString()
-  birthDate?: string;
+  birthDate?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsIn(STUDENT_GENDERS)
-  gender?: StudentGender;
+  gender?: StudentGender | null;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @MaxLength(200)
-  address?: string;
+  address?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @MaxLength(40)
-  phone?: string;
+  phone?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsEmail()
   @MaxLength(120)
-  email?: string;
+  email?: string | null;
 
   @IsOptional()
   @IsIn(STUDENT_STATUSES)
   status?: StudentStatus;
 
   @IsOptional()
+  @nullable()
   @IsDateString()
-  enrollmentDate?: string;
+  enrollmentDate?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @MaxLength(2000)
-  observationAcademic?: string;
+  observationAcademic?: string | null;
 
   @IsOptional()
+  @nullable()
   @IsString()
   @MaxLength(2000)
-  observationInstitutional?: string;
+  observationInstitutional?: string | null;
 }

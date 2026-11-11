@@ -38,6 +38,10 @@ export class StudentsController {
     @Query('courseId') courseId?: string,
     @Query('q') q?: string,
     @Query('status') status?: string,
+    @Query('shift') shift?: string,
+    @Query('division') division?: string,
+    @Query('schoolYear') schoolYear?: string,
+    @Query('sort') sort?: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page = 1,
     @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit = 25,
   ) {
@@ -45,6 +49,10 @@ export class StudentsController {
       courseId,
       q,
       status,
+      shift,
+      division,
+      schoolYear: schoolYear === undefined ? undefined : Number(schoolYear),
+      sort,
       page,
       limit,
     });
@@ -56,6 +64,23 @@ export class StudentsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.students.profile(membership, id);
+  }
+
+  @Get(':id/activity')
+  activity(
+    @CurrentMembership() membership: Membership,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit = 10,
+  ) {
+    return this.students.activity(membership, id, limit);
+  }
+
+  @Get(':id/report')
+  report(
+    @CurrentMembership() membership: Membership,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.students.report(membership, id);
   }
 
   @Post()

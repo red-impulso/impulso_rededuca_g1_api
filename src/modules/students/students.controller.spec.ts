@@ -155,12 +155,27 @@ describe('StudentsController', () => {
   it('GET /students delega los query params en el service', async () => {
     service.list.mockResolvedValue({ data: [], total: 0, page: 2, limit: 10 });
     await expect(
-      controller.list(membership, COURSE, 'gar', 'active', 2, 10),
+      controller.list(
+        membership,
+        COURSE,
+        'gar',
+        'active',
+        'morning',
+        'B',
+        '2026',
+        'lastName',
+        2,
+        10,
+      ),
     ).resolves.toEqual({ data: [], total: 0, page: 2, limit: 10 });
     expect(service.list).toHaveBeenCalledWith(membership, {
       courseId: COURSE,
       q: 'gar',
       status: 'active',
+      shift: 'morning',
+      division: 'B',
+      schoolYear: 2026,
+      sort: 'lastName',
       page: 2,
       limit: 10,
     });
@@ -173,6 +188,10 @@ describe('StudentsController', () => {
       courseId: undefined,
       q: undefined,
       status: undefined,
+      shift: undefined,
+      division: undefined,
+      schoolYear: undefined,
+      sort: undefined,
       page: 1,
       limit: 25,
     });

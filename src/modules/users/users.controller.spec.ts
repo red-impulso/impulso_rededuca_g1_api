@@ -95,7 +95,10 @@ describe('UsersController', () => {
     const guards = Reflect.getMetadata('__guards__', UsersController);
     expect(guards).toContain(AuthGuard);
     expect(guards).toContain(MembershipGuard);
-    expect(reflector.get(ROLES_KEY, UsersController)).toEqual(['admin']);
+    expect(reflector.get(ROLES_KEY, UsersController)).toEqual([
+      'admin',
+      'director',
+    ]);
   });
 
   describe('restricción de acceso', () => {
@@ -113,7 +116,7 @@ describe('UsersController', () => {
         );
       });
 
-      it.each(['director', 'teacher', 'guardian'])(
+      it.each(['teacher', 'guardian'])(
         `${name}: rol %s → 403`,
         async (role) => {
           const { guard, context } = membershipGuardContext(
@@ -126,12 +129,14 @@ describe('UsersController', () => {
         },
       );
 
-      it(`${name}: rol admin → pasa el guard`, async () => {
-        const { guard, context } = membershipGuardContext(
-          controller[handler],
-          { role: 'admin' },
-        );
-        await expect(guard.canActivate(context)).resolves.toBe(true);
+      it(`${name}: rol admin y director → pasan el guard`, async () => {
+        for (const role of ['admin', 'director']) {
+          const { guard, context } = membershipGuardContext(
+            controller[handler],
+            { role },
+          );
+          await expect(guard.canActivate(context)).resolves.toBe(true);
+        }
       });
     }
   });
@@ -139,12 +144,13 @@ describe('UsersController', () => {
   it('GET /users delega en el service con filtros y paginación', async () => {
     service.list.mockResolvedValue({ data: [], total: 0 });
     await expect(
-      controller.list(membership, 'lau', 'teacher', 'active', 2, 10),
+      controller.list(membership, 'lau', 'teacher', 'active', '7d', 2, 10),
     ).resolves.toEqual({ data: [], total: 0 });
     expect(service.list).toHaveBeenCalledWith(membership, {
       q: 'lau',
       role: 'teacher',
       status: 'active',
+      lastAccess: '7d',
       page: 2,
       limit: 10,
     });

@@ -39,8 +39,17 @@ function tables(init: Record<string, unknown[]>) {
         not: (...args: unknown[]) => (
           table.calls.push({ op: 'not', args }), q
         ),
+        or: (...args: unknown[]) => (
+          table.calls.push({ op: 'or', args }), q
+        ),
         order: (...args: unknown[]) => (
           table.calls.push({ op: 'order', args }), q
+        ),
+        range: (...args: unknown[]) => (
+          table.calls.push({ op: 'range', args }), q
+        ),
+        limit: (...args: unknown[]) => (
+          table.calls.push({ op: 'limit', args }), q
         ),
         insert: (...args: unknown[]) => (
           table.calls.push({ op: 'insert', args }), q
@@ -72,7 +81,26 @@ function service(
       error: null,
     }),
   );
-  db.auth = { admin: { getUserById } };
+  db.auth = {
+    admin: {
+      getUserById,
+      createUser: vi.fn((opts: { email?: string }) =>
+        Promise.resolve({
+          data: { user: { id: 'uNew', email: opts?.email ?? null } },
+          error: null,
+        }),
+      ),
+      listUsers: vi.fn(() =>
+        Promise.resolve({
+          data: { users: [] },
+          error: null,
+        }),
+      ),
+      updateUserById: vi.fn(() =>
+        Promise.resolve({ data: { user: {} }, error: null }),
+      ),
+    },
+  };
   const svc = new GuardiansService({ admin: db } as any);
   return { svc, state, getUserById };
 }
@@ -550,5 +578,227 @@ describe('GuardiansService · makePrimary', () => {
     await expect(svc.makePrimary(admin, ST1, GM1)).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+});
+
+describe('GuardiansService · search (GET /guardians)', () => {
+  const guardianRow = {
+    id: GM1,
+    user_id: 'uG1',
+    status: 'active',
+    created_at: '2026-03-01T10:00:00Z',
+    profiles: {
+      full_name: 'María García',
+      first_name: 'María',
+      last_name: 'García',
+      dni: '30111222',
+      phone: '1144556677',
+      alt_phone: '1199887766',
+      address: 'Calle Falsa 123',
+    },
+  };
+
+  it('lista tutores de la institución con altPhone y paginación', async () => {
+    const { svc, state } = service(
+      { memberships: [{ data: [guardianRow], count: 1, error: null }] },
+      { uG1: 'maria@mail.com' },
+    );
+    const result = await svc.search(admin, { q: undefined, page: 2 });
+    expect(result).toEqual({
+      data: [
+        {
+          membershipId: GM1,
+          userId: 'uG1',
+          fullName: 'María García',
+          firstName: 'María',
+          lastName: 'García',
+          dni: '30111222',
+          email: 'maria@mail.com',
+          phone: '1144556677',
+          altPhone: '1199887766',
+          address: 'Calle Falsa 123',
+          status: 'active',
+          createdAt: '2026-03-01T10:00:00Z',
+        },
+      ],
+      total: 1,
+      page: 2,
+      limit: 25,
+    });
+    expect(state.memberships.calls).toContainEqual({
+      op: 'eq',
+      args: ['institution_id', INST],
+    });
+    expect(state.memberships.calls).toContainEqual({
+      op: 'eq',
+      args: ['role', 'guardian'],
+    });
+    expect(state.memberships.calls).toContainEqual({
+      op: 'range',
+      args: [25, 49],
+    });
+  });
+
+  it('q filtra por nombre o DNI vía profiles', async () => {
+    const { svc, state } = service({
+      profiles: [{ data: [{ id: 'uG1' }], error: null }],
+      memberships: [
+        { data: [{ id: GM1 }], error: null },
+        { data: [guardianRow], count: 1, error: null },
+      ],
+    });
+    const result = await svc.search(admin, { q: 'maria' });
+    expect(result.total).toBe(1);
+    expect(state.profiles.calls).toContainEqual({
+      op: 'or',
+      args: ['full_name.ilike.%maria%,dni.ilike.%maria%'],
+    });
+  });
+
+  it('teacher/guardian → 403', async () => {
+    for (const member of [
+      { id: 'm', userId: 'u', institutionId: INST, role: 'teacher' as const },
+      { id: 'm', userId: 'u', institutionId: INST, role: 'guardian' as const },
+    ]) {
+      const { svc, state } = service({});
+      await expect(svc.search(member, {})).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(state.memberships?.calls ?? []).toEqual([]);
+    }
+  });
+});
+
+describe('GuardiansService · createGuardian (POST /guardians)', () => {
+  const guardianRow = {
+    id: GM1,
+    user_id: 'uNew',
+    status: 'active',
+    created_at: '2026-03-01T10:00:00Z',
+    profiles: {
+      full_name: 'Ana López',
+      first_name: 'Ana',
+      last_name: 'López',
+      dni: '22111222',
+      phone: null,
+      alt_phone: '1199887766',
+      address: null,
+    },
+  };
+
+  it('crea auth + perfil + membresía y devuelve el tutor con altPhone', async () => {
+    const { svc, state } = service({
+      profiles: [
+        { data: null, error: null }, // no existe por DNI
+        { data: null, error: null }, // perfil no existe aún
+      ],
+      memberships: [{ data: guardianRow, error: null }],
+    });
+    const result = await svc.createGuardian(admin, {
+      firstName: 'Ana',
+      lastName: 'López',
+      dni: '22111222',
+      email: 'ana@mail.com',
+      altPhone: '1199887766',
+    });
+    expect(result).toMatchObject({
+      membershipId: GM1,
+      fullName: 'Ana López',
+      dni: '22111222',
+      email: 'ana@mail.com',
+      altPhone: '1199887766',
+      created: true,
+    });
+    const insert = state.profiles.calls.find((c) => c.op === 'insert');
+    expect(insert?.args[0]).toMatchObject({
+      full_name: 'Ana López',
+      alt_phone: '1199887766',
+    });
+    const membershipInsert = state.memberships.calls.find(
+      (c) => c.op === 'insert',
+    );
+    expect(membershipInsert?.args[0]).toMatchObject({
+      institution_id: INST,
+      role: 'guardian',
+      status: 'active',
+    });
+  });
+
+  it('tutor existente por DNI → devuelve su membresía sin crear', async () => {
+    const { svc, state } = service({
+      profiles: [{ data: { id: 'uG1' }, error: null }],
+      memberships: [{ data: { ...guardianRow, user_id: 'uG1' }, error: null }],
+    });
+    const result = await svc.createGuardian(admin, {
+      firstName: 'Ana',
+      lastName: 'López',
+      dni: '22111222',
+      email: 'ana@mail.com',
+    });
+    expect(result).toMatchObject({ membershipId: GM1, created: false });
+    expect(state.profiles.calls.filter((c) => c.op === 'insert')).toEqual([]);
+    expect(
+      state.memberships.calls.filter((c) => c.op === 'insert'),
+    ).toEqual([]);
+  });
+
+  it('sin email para alta nueva → 400', async () => {
+    const { svc } = service({
+      profiles: [{ data: null, error: null }],
+    });
+    await expect(
+      svc.createGuardian(admin, {
+        firstName: 'Ana',
+        lastName: 'López',
+        dni: '22111222',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('GuardiansService · updateGuardian (PATCH /guardians/:id)', () => {
+  const guardianRow = {
+    id: GM1,
+    user_id: 'uG1',
+    status: 'active',
+    created_at: '2026-03-01T10:00:00Z',
+    profiles: {
+      full_name: 'María García',
+      first_name: 'María',
+      last_name: 'García',
+      dni: '30111222',
+      phone: '1144556677',
+      alt_phone: null,
+      address: 'Calle Falsa 123',
+    },
+  };
+
+  it('edita datos personales en profiles dentro de la institución', async () => {
+    const { svc, state } = service({
+      memberships: [
+        { data: guardianRow, error: null },
+        { data: guardianRow, error: null },
+      ],
+      profiles: [{ data: { id: 'uG1' }, error: null }],
+    });
+    const result = await svc.updateGuardian(admin, GM1, {
+      firstName: 'María',
+      altPhone: '1177665544',
+    });
+    expect(result).toMatchObject({ membershipId: GM1, userId: 'uG1' });
+    const upd = state.profiles.calls.find((c) => c.op === 'update');
+    expect(upd?.args[0]).toMatchObject({
+      first_name: 'María',
+      alt_phone: '1177665544',
+    });
+  });
+
+  it('tutor de otra institución → 404', async () => {
+    const { svc } = service({
+      memberships: [{ data: null, error: null }],
+    });
+    await expect(
+      svc.updateGuardian(admin, GM1, { firstName: 'X' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

@@ -1,7 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
 import { SupabaseService } from './../src/supabase/supabase.service.js';
 
@@ -40,7 +39,7 @@ const tables: Record<string, unknown> = {
 };
 
 describe('GET /me (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
 
   beforeEach(async () => {
     const moduleFixture = await Test.createTestingModule({
