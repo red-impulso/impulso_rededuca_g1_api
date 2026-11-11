@@ -169,6 +169,10 @@ describe('CoursesService · list', () => {
           division: 'A',
           shift: 'morning',
           schoolYear: 2026,
+          classroom: null,
+          status: 'active',
+          studentsCount: 0,
+          homeroomTeacher: null,
         },
         {
           id: 'c2',
@@ -177,6 +181,10 @@ describe('CoursesService · list', () => {
           division: 'B',
           shift: 'afternoon',
           schoolYear: 2026,
+          classroom: null,
+          status: 'active',
+          studentsCount: 0,
+          homeroomTeacher: null,
         },
         {
           id: 'c3',
@@ -185,6 +193,10 @@ describe('CoursesService · list', () => {
           division: 'A',
           shift: null,
           schoolYear: 2025,
+          classroom: null,
+          status: 'active',
+          studentsCount: 0,
+          homeroomTeacher: null,
         },
       ]);
     }
@@ -231,6 +243,10 @@ describe('CoursesService · create', () => {
       division: 'A',
       shift: 'morning',
       schoolYear: 2026,
+      classroom: null,
+      status: 'active',
+      studentsCount: 0,
+      homeroomTeacher: null,
     });
     const insert = state.courses.calls.find((c) => c.op === 'insert');
     expect(insert?.args[0]).toEqual({
@@ -338,6 +354,10 @@ describe('CoursesService · update', () => {
       division: 'C',
       shift: 'afternoon',
       schoolYear: 2026,
+      classroom: null,
+      status: 'active',
+      studentsCount: 0,
+      homeroomTeacher: null,
     });
     const upd = state.courses.calls.find((c) => c.op === 'update');
     expect(upd?.args[0]).toMatchObject({ division: 'C', name: '2° C' });
@@ -471,5 +491,69 @@ describe('CoursesService · remove', () => {
       ForbiddenException,
     );
     expect(state.courses?.calls ?? []).toEqual([]);
+  });
+});
+
+describe('CoursesService · detail (GET /courses/:id)', () => {
+  it('devuelve el detalle con studentsCount y homeroomTeacher', async () => {
+    const { svc } = service({
+      courses: [
+        {
+          data: {
+            ...rows[0],
+            id: COURSE,
+            classroom: 'Sala 12',
+            status: 'active',
+            homeroom_teacher_membership_id:
+              'aaaaaaaa-0000-0000-0000-000000000001',
+          },
+          error: null,
+        },
+      ],
+      students: [
+        {
+          data: [{ course_id: COURSE }, { course_id: COURSE }],
+          error: null,
+        },
+      ],
+      memberships: [
+        {
+          data: [
+            {
+              id: 'aaaaaaaa-0000-0000-0000-000000000001',
+              user_id: 'uT1',
+            },
+          ],
+          error: null,
+        },
+      ],
+      profiles: [
+        { data: [{ id: 'uT1', full_name: 'Laura Gómez' }], error: null },
+      ],
+    });
+    await expect(svc.detail(admin, COURSE)).resolves.toEqual({
+      id: COURSE,
+      name: '1° A',
+      year: 1,
+      division: 'A',
+      shift: 'morning',
+      schoolYear: 2026,
+      classroom: 'Sala 12',
+      status: 'active',
+      studentsCount: 2,
+      homeroomTeacher: {
+        id: 'aaaaaaaa-0000-0000-0000-000000000001',
+        fullName: 'Laura Gómez',
+      },
+    });
+  });
+
+  it('curso inexistente → 404', async () => {
+    const { svc } = service({
+      courses: [{ data: null, error: null }],
+    });
+    await expect(svc.detail(admin, COURSE)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 });

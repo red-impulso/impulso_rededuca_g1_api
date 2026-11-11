@@ -9,6 +9,9 @@ export interface MeResponse {
     id: string;
     institutionId: string;
     institutionName: string;
+    institutionStatus: string | null;
+    city: string | null;
+    level: string | null;
     role: string;
   }[];
 }
@@ -29,6 +32,9 @@ export interface TeacherSubject {
 export interface SchoolMembership {
   id: string;
   name: string | null;
+  institutionStatus: string | null;
+  city: string | null;
+  level: string | null;
   role: string;
   status: string;
 }
@@ -57,7 +63,7 @@ export class MeService {
 
     const { data: rows, error: membershipsError } = await db
       .from('memberships')
-      .select('id, institution_id, role, institutions(name)')
+      .select('id, institution_id, role, institutions(name, status, city, level)')
       .eq('user_id', userId);
     if (membershipsError) throw membershipsError;
 
@@ -70,7 +76,10 @@ export class MeService {
       memberships: (rows ?? []).map((m: any) => ({
         id: m.id,
         institutionId: m.institution_id,
-        institutionName: m.institutions?.name,
+        institutionName: m.institutions?.name ?? null,
+        institutionStatus: m.institutions?.status ?? null,
+        city: m.institutions?.city ?? null,
+        level: m.institutions?.level ?? null,
         role: m.role,
       })),
     };
@@ -83,7 +92,7 @@ export class MeService {
   async getMySchools(userId: string): Promise<SchoolMembership[]> {
     const { data, error } = await this.supabase.admin
       .from('memberships')
-      .select('institution_id, role, status, institutions(name)')
+      .select('institution_id, role, status, institutions(name, status, city, level)')
       .eq('user_id', userId)
       .in('status', [...ACTIVE_MEMBERSHIP_STATUSES]);
     if (error) throw error;
@@ -91,6 +100,9 @@ export class MeService {
     return (data ?? []).map((m: any) => ({
       id: m.institution_id,
       name: m.institutions?.name ?? null,
+      institutionStatus: m.institutions?.status ?? null,
+      city: m.institutions?.city ?? null,
+      level: m.institutions?.level ?? null,
       role: m.role,
       status: m.status,
     }));

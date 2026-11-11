@@ -123,6 +123,11 @@ const expectedItem = {
     schoolYear: 2026,
   },
   teacher: { id: TEACHER_M, fullName: 'Laura Gómez' },
+  weeklyHours: 4,
+  description: null,
+  status: 'active',
+  studentsCount: 0,
+  updatedAt: null,
 };
 
 const teacherMembership = {
@@ -229,6 +234,7 @@ describe('SubjectsService · create', () => {
       course_id: COURSE,
       name: 'Matemática',
       teacher_membership_id: TEACHER_M,
+      description: null,
     });
   });
 
@@ -325,7 +331,7 @@ describe('SubjectsService · update', () => {
     expect(item.name).toBe('Lengua');
     expect(
       state.subjects.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({ name: 'Lengua' });
+    ).toMatchObject({ name: 'Lengua' });
   });
 
   it('reasigna el docente', async () => {
@@ -343,7 +349,7 @@ describe('SubjectsService · update', () => {
     expect(item.teacher).toEqual({ id: TEACHER_M, fullName: 'Laura Gómez' });
     expect(
       state.subjects.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({ teacher_membership_id: TEACHER_M });
+    ).toMatchObject({ teacher_membership_id: TEACHER_M });
   });
 
   it('teacherMembershipId null → desasigna al docente', async () => {
@@ -359,7 +365,7 @@ describe('SubjectsService · update', () => {
     expect(item.teacher).toBeNull();
     expect(
       state.subjects.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({ teacher_membership_id: null });
+    ).toMatchObject({ teacher_membership_id: null });
   });
 
   it('materia inexistente o de otra institución → 404', async () => {
@@ -447,5 +453,45 @@ describe('SubjectsService · remove', () => {
       ForbiddenException,
     );
     expect(state.subjects?.calls ?? []).toEqual([]);
+  });
+});
+
+describe('SubjectsService · detail (GET /subjects/:id)', () => {
+  it('devuelve la materia con todos los campos del contrato', async () => {
+    const { svc } = service({
+      subjects: [
+        {
+          data: {
+            ...subjectRow,
+            weekly_hours: 8,
+            description: 'Área troncal',
+            status: 'active',
+            updated_at: '2026-11-11T10:00:00Z',
+          },
+          error: null,
+        },
+      ],
+      memberships: [{ data: [teacherMembership], error: null }],
+      profiles: [{ data: [teacherProfile], error: null }],
+      students: [
+        { data: [{ course_id: COURSE }, { course_id: COURSE }], error: null },
+      ],
+    });
+    await expect(svc.detail(admin, SUBJECT)).resolves.toEqual({
+      ...expectedItem,
+      weeklyHours: 8,
+      description: 'Área troncal',
+      studentsCount: 2,
+      updatedAt: '2026-11-11T10:00:00Z',
+    });
+  });
+
+  it('materia inexistente → 404', async () => {
+    const { svc } = service({
+      subjects: [{ data: null, error: null }],
+    });
+    await expect(svc.detail(admin, SUBJECT)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 });

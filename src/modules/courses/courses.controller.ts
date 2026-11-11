@@ -34,6 +34,14 @@ export class CoursesController {
     return this.courses.list(membership);
   }
 
+  @Get(':id')
+  detail(
+    @CurrentMembership() membership: Membership,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.courses.detail(membership, id);
+  }
+
   @Post()
   @HttpCode(201)
   @UsePipes(new ValidationPipe({ whitelist: true }))

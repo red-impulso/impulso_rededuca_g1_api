@@ -6,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   UseGuards,
   UsePipes,
   ValidationPipe,
@@ -25,6 +26,15 @@ import { MembershipsService } from './memberships.service.js';
 @Roles('admin')
 export class MembershipsController {
   constructor(private readonly memberships: MembershipsService) {}
+
+  @Post(':id/reactivate')
+  @HttpCode(204)
+  reactivate(
+    @CurrentMembership() membership: Membership,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.memberships.reactivate(membership, id);
+  }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))

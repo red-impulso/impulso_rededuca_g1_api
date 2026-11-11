@@ -11,7 +11,9 @@ import type {
   CreateGuardianLinkDto,
   GuardianLinkStatus,
 } from './dto/create-guardian-link.dto.js';
+import type { CreateGuardianDto } from './dto/create-guardian.dto.js';
 import type { UpdateGuardianLinkDto } from './dto/update-guardian-link.dto.js';
+import type { UpdateGuardianDto } from './dto/update-guardian.dto.js';
 
 export interface GuardianProfile {
   id: string;
@@ -20,7 +22,41 @@ export interface GuardianProfile {
   lastName: string | null;
   dni: string | null;
   phone: string | null;
+  altPhone: string | null;
   address: string | null;
+}
+
+export interface GuardianItem {
+  membershipId: string;
+  userId: string;
+  fullName: string;
+  firstName: string | null;
+  lastName: string | null;
+  dni: string | null;
+  email: string | null;
+  phone: string | null;
+  altPhone: string | null;
+  address: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface GuardianListResult {
+  data: GuardianItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface CreateGuardianResult extends GuardianItem {
+  /** false cuando se reutilizó un tutor ya existente por DNI o email. */
+  created: boolean;
+}
+
+export interface ListGuardiansParams {
+  q?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface GuardianLinkResponse {
@@ -53,6 +89,10 @@ const NON_GUARDIAN_MSG =
 const DUPLICATE_MSG = 'El tutor ya está vinculado a este alumno';
 const PRIMARY_UNLINK_MSG =
   'No se puede desvincular al único tutor principal sin designar otro principal primero';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const GUARDIAN_COLUMNS =
+  'id, user_id, status, created_at, profiles!inner(full_name, first_name, last_name, dni, phone, alt_phone, address)';
 
 @Injectable()
 export class GuardiansService {
@@ -297,6 +337,186 @@ export class GuardiansService {
     return enriched ?? mapLink(row, null, null, 0);
   }
 
+  /**
+   * Listado paginado de tutores (memberships con role 'guardian') de la
+   * institución activa, ordenado por nombre. `q` busca en nombre y DNI,
+   * insensible a mayúsculas. Solo admin/director.
+   */
+  async search(
+    membership: Membership,
+    params: ListGuardiansParams = {},
+  ): Promise<GuardianListResult> {
+    this.assertStaff(membership);
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 25;
+    if (!Number.isInteger(page) || page < 1) {
+      throw new BadRequestException('page debe ser un entero mayor o igual a 1');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit debe ser un entero entre 1 y 100');
+    }
+    const term = this.searchTerm(params.q);
+    const institutionId = membership.institutionId;
+
+    let query = this.supabase.admin
+      .from('memberships')
+      .select(GUARDIAN_COLUMNS, { count: 'exact' })
+      .eq('institution_id', institutionId)
+      .eq('role', 'guardian')
+      .order('full_name', { referencedTable: 'profiles' })
+      .order('created_at');
+    if (term) {
+      const ids = await this.guardianIdsMatching(institutionId, term);
+      if (!ids.length) return { data: [], total: 0, page, limit };
+      query = query.in('id', ids);
+    }
+
+    const from = (page - 1) * limit;
+    const { data, count, error } = await query.range(from, from + limit - 1);
+    if (error) throw error;
+
+    const rows = data ?? [];
+    const emails = await this.emailsByUserId(
+      unique(rows.map((r: any) => r.user_id as string)),
+    );
+    return {
+      data: rows.map((r: any) =>
+        mapGuardianItem(r, emails.get(r.user_id) ?? null),
+      ),
+      total: count ?? rows.length,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Alta de tutor: crea el usuario en Auth (si no existe por email), su
+   * perfil y la membresía con rol 'guardian'. Si ya existe un tutor por
+   * DNI o por email devuelve su membresía con `created: false`.
+   */
+  async createGuardian(
+    membership: Membership,
+    dto: CreateGuardianDto,
+  ): Promise<CreateGuardianResult> {
+    this.assertStaff(membership);
+    const input = this.validateCreate(dto);
+    const institutionId = membership.institutionId;
+
+    // Reutiliza un tutor existente por DNI o por email.
+    let userId: string | null = null;
+    if (input.dni) {
+      const { data: profile, error } = await this.supabase.admin
+        .from('profiles')
+        .select('id')
+        .eq('dni', input.dni)
+        .maybeSingle();
+      if (error) throw error;
+      userId = profile?.id ?? null;
+    }
+    if (!userId && input.email) {
+      const authUser = await this.findAuthUserByEmail(input.email);
+      userId = authUser?.id ?? null;
+    }
+    if (!userId && !input.email) {
+      throw new BadRequestException(
+        'email es obligatorio para dar de alta un tutor nuevo',
+      );
+    }
+
+    if (userId) {
+      const existing = await this.guardianMembershipByUser(
+        institutionId,
+        userId,
+      );
+      if (existing) {
+        const emails = await this.emailsByUserId([existing.user_id]);
+        return {
+          ...mapGuardianItem(existing, emails.get(existing.user_id) ?? null),
+          created: false,
+        };
+      }
+    } else {
+      const { data, error } = await this.supabase.admin.auth.admin
+        .createUser({ email: input.email!, email_confirm: true });
+      if (error) throw error;
+      if (!data?.user) {
+        throw new BadRequestException('No se pudo crear el usuario en auth');
+      }
+      userId = data.user.id;
+    }
+
+    await this.upsertProfile(userId, input);
+
+    const { data: created, error: insertError } = await this.supabase.admin
+      .from('memberships')
+      .insert({
+        user_id: userId,
+        institution_id: institutionId,
+        role: 'guardian',
+        status: 'active',
+      })
+      .select(GUARDIAN_COLUMNS)
+      .single();
+    if (insertError) {
+      if (insertError.code === '23505') {
+        const existing = await this.guardianMembershipByUser(
+          institutionId,
+          userId,
+        );
+        if (existing) {
+          const emails = await this.emailsByUserId([existing.user_id]);
+          return {
+            ...mapGuardianItem(existing, emails.get(existing.user_id) ?? null),
+            created: false,
+          };
+        }
+      }
+      throw insertError;
+    }
+
+    const emails = await this.emailsByUserId([created.user_id]);
+    return {
+      ...mapGuardianItem(
+        created,
+        input.email ?? emails.get(created.user_id) ?? null,
+      ),
+      created: true,
+    };
+  }
+
+  /**
+   * Edita los datos personales del tutor (nombre, DNI, teléfonos,
+   * dirección y email de acceso) sobre su perfil y auth.
+   */
+  async updateGuardian(
+    membership: Membership,
+    membershipId: string,
+    dto: UpdateGuardianDto,
+  ): Promise<GuardianItem> {
+    this.assertStaff(membership);
+    const guardian = await this.guardianMembershipFor(membership, membershipId);
+    const { profileChanges, email } = this.validateUpdatePerson(dto);
+
+    if (email) {
+      await this.updateAuthEmail(guardian.user_id, email);
+    }
+    const { data, error } = await this.supabase.admin
+      .from('profiles')
+      .update(profileChanges)
+      .eq('id', guardian.user_id)
+      .select('id')
+      .single();
+    if (error) throw error;
+    void data;
+
+    const refreshed = await this.guardianMembershipFor(membership, membershipId);
+    const emails = await this.emailsByUserId([refreshed.user_id]);
+    return mapGuardianItem(
+      refreshed,
+      email ?? emails.get(refreshed.user_id) ?? null,
+    );
+  }
+
   /** Solo admin/director pueden gestionar los vínculos de tutores. */
   private assertStaff(membership: Membership) {
     if (membership.role !== 'admin' && membership.role !== 'director') {
@@ -388,7 +608,9 @@ export class GuardiansService {
       userIds.length
         ? this.supabase.admin
             .from('profiles')
-            .select('id, full_name, first_name, last_name, dni, phone, address')
+            .select(
+              'id, full_name, first_name, last_name, dni, phone, alt_phone, address',
+            )
             .in('id', userIds)
         : Promise.resolve({ data: [], error: null }),
       this.otherStudentsCount(membershipIds, studentId),
@@ -436,6 +658,232 @@ export class GuardiansService {
     return counts;
   }
 
+  /** Membresía guardian de la institución activa para un user_id, o null. */
+  private async guardianMembershipByUser(institutionId: string, userId: string) {
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select(GUARDIAN_COLUMNS)
+      .eq('institution_id', institutionId)
+      .eq('user_id', userId)
+      .eq('role', 'guardian')
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  /** Membresía guardian dentro de la institución activa, o 404. */
+  private async guardianMembershipFor(membership: Membership, id: string) {
+    if (typeof id !== 'string' || !UUID_RE.test(id)) {
+      throw new BadRequestException('membershipId inválido');
+    }
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select(GUARDIAN_COLUMNS)
+      .eq('id', id)
+      .eq('institution_id', membership.institutionId)
+      .eq('role', 'guardian')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new NotFoundException('Tutor no encontrado');
+    return data;
+  }
+
+  /**
+   * Ids de membresías guardian de la institución cuyo perfil coincide con
+   * `term` por nombre o DNI (insensible a mayúsculas).
+   */
+  private async guardianIdsMatching(
+    institutionId: string,
+    term: string,
+  ): Promise<string[]> {
+    const { data: profiles, error: profilesError } = await this.supabase.admin
+      .from('profiles')
+      .select('id')
+      .or(`full_name.ilike.%${term}%,dni.ilike.%${term}%`);
+    if (profilesError) throw profilesError;
+    const userIds = unique((profiles ?? []).map((p: any) => p.id));
+    if (!userIds.length) return [];
+
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select('id')
+      .eq('institution_id', institutionId)
+      .eq('role', 'guardian')
+      .in('user_id', userIds);
+    if (error) throw error;
+    return (data ?? []).map((r: any) => r.id as string);
+  }
+
+  /** Usuario de auth por email (comparación insensible a mayúsculas). */
+  private async findAuthUserByEmail(email: string) {
+    const { data, error } = await this.supabase.admin.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
+    if (error) throw error;
+    return (
+      (data?.users ?? []).find(
+        (u) => (u.email ?? '').toLowerCase() === email,
+      ) ?? null
+    );
+  }
+
+  /** Crea el perfil si no existe; si existe, completa los datos del alta. */
+  private async upsertProfile(
+    userId: string,
+    input: ReturnType<GuardiansService['validateCreate']>,
+  ) {
+    const { data: existing, error } = await this.supabase.admin
+      .from('profiles')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) throw error;
+
+    const row = {
+      full_name: `${input.firstName} ${input.lastName}`,
+      first_name: input.firstName,
+      last_name: input.lastName,
+      dni: input.dni,
+      phone: input.phone,
+      alt_phone: input.altPhone,
+      address: input.address,
+    };
+    if (existing) {
+      const { error: updateError } = await this.supabase.admin
+        .from('profiles')
+        .update(row)
+        .eq('id', userId);
+      if (updateError) throw updateError;
+      return;
+    }
+    const { error: insertError } = await this.supabase.admin
+      .from('profiles')
+      .insert({ id: userId, ...row });
+    if (insertError) throw insertError;
+  }
+
+  /** Actualiza el email del usuario en auth; 400 si la API lo rechaza. */
+  private async updateAuthEmail(userId: string, email: string) {
+    try {
+      const { error } = await this.supabase.admin.auth.admin.updateUserById(
+        userId,
+        { email },
+      );
+      if (error) {
+        throw new BadRequestException(
+          'No se pudo actualizar el email del tutor',
+        );
+      }
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException('No se pudo actualizar el email del tutor');
+    }
+  }
+
+  /** Normaliza el término de búsqueda para los filtros ilike/or. */
+  private searchTerm(q?: string): string | null {
+    if (typeof q !== 'string' || !q.trim()) return null;
+    const term = q
+      .trim()
+      .replace(/[\\%_]/g, (m) => `\\${m}`)
+      .replace(/[(),"']/g, ' ')
+      .trim();
+    return term || null;
+  }
+
+  /** Valida y normaliza el alta de tutor. */
+  private validateCreate(dto: CreateGuardianDto) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('El cuerpo es obligatorio');
+    }
+    const firstName =
+      typeof dto.firstName === 'string' ? dto.firstName.trim() : '';
+    const lastName =
+      typeof dto.lastName === 'string' ? dto.lastName.trim() : '';
+    if (!firstName || !lastName) {
+      throw new BadRequestException('firstName y lastName son obligatorios');
+    }
+    const email = this.optionalText(dto.email);
+    if (email !== null && !EMAIL_RE.test(email.toLowerCase())) {
+      throw new BadRequestException('email inválido');
+    }
+    return {
+      firstName,
+      lastName,
+      dni: this.optionalText(dto.dni),
+      email: email?.toLowerCase() ?? null,
+      phone: this.optionalText(dto.phone),
+      altPhone: this.optionalText(dto.altPhone),
+      address: this.optionalText(dto.address),
+    };
+  }
+
+  /** Valida la edición del tutor y separa cambios de perfil y auth. */
+  private validateUpdatePerson(dto: UpdateGuardianDto) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('El cuerpo es obligatorio');
+    }
+    const profileChanges: Record<string, unknown> = {};
+    let email: string | null | undefined;
+
+    const firstName =
+      dto.firstName !== undefined ? dto.firstName.trim() : undefined;
+    if (firstName !== undefined && !firstName) {
+      throw new BadRequestException('firstName no puede estar vacío');
+    }
+    const lastName =
+      dto.lastName !== undefined ? dto.lastName.trim() : undefined;
+    if (lastName !== undefined && !lastName) {
+      throw new BadRequestException('lastName no puede estar vacío');
+    }
+    if (dto.fullName !== undefined && !dto.fullName.trim()) {
+      throw new BadRequestException('fullName no puede estar vacío');
+    }
+
+    if (firstName !== undefined) profileChanges.first_name = firstName;
+    if (lastName !== undefined) profileChanges.last_name = lastName;
+    if (dto.fullName !== undefined) {
+      profileChanges.full_name = dto.fullName.trim();
+    } else if (firstName !== undefined || lastName !== undefined) {
+      profileChanges.full_name =
+        `${firstName ?? ''} ${lastName ?? ''}`.trim() ||
+        `${firstName ?? lastName}`;
+    }
+    if (dto.dni !== undefined) profileChanges.dni = this.optionalText(dto.dni);
+    if (dto.email !== undefined) {
+      const normalized = this.optionalText(dto.email);
+      if (normalized !== null && !EMAIL_RE.test(normalized.toLowerCase())) {
+        throw new BadRequestException('email inválido');
+      }
+      email = normalized?.toLowerCase() ?? null;
+    }
+    if (dto.phone !== undefined) {
+      profileChanges.phone = this.optionalText(dto.phone);
+    }
+    if (dto.altPhone !== undefined) {
+      profileChanges.alt_phone = this.optionalText(dto.altPhone);
+    }
+    if (dto.address !== undefined) {
+      profileChanges.address = this.optionalText(dto.address);
+    }
+
+    if (!Object.keys(profileChanges).length && email === undefined) {
+      throw new BadRequestException(
+        'Debe enviar al menos un campo para actualizar',
+      );
+    }
+    return { profileChanges, email };
+  }
+
+  private optionalText(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string') {
+      throw new BadRequestException('El campo debe ser texto');
+    }
+    return value.trim() || null;
+  }
+
   /** Emails de auth.users por user_id; los fallos individuales devuelven ausencia. */
   private async emailsByUserId(
     userIds: string[],
@@ -481,10 +929,33 @@ function mapLink(
           lastName: profile.last_name ?? null,
           dni: profile.dni ?? null,
           phone: profile.phone ?? null,
+          altPhone: profile.alt_phone ?? null,
           address: profile.address ?? null,
         }
       : null,
     email,
     otherStudentsCount,
   };
+}
+
+function mapGuardianItem(r: any, email: string | null): GuardianItem {
+  const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
+  return {
+    membershipId: r.id,
+    userId: r.user_id,
+    fullName: profile?.full_name ?? '',
+    firstName: profile?.first_name ?? null,
+    lastName: profile?.last_name ?? null,
+    dni: profile?.dni ?? null,
+    email,
+    phone: profile?.phone ?? null,
+    altPhone: profile?.alt_phone ?? null,
+    address: profile?.address ?? null,
+    status: r.status ?? 'active',
+    createdAt: r.created_at,
+  };
+}
+
+function unique(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v)))];
 }

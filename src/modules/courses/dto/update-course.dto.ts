@@ -4,11 +4,18 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
-import { COURSE_SHIFTS, type CourseShift } from './create-course.dto.js';
+import {
+  COURSE_SHIFTS,
+  COURSE_STATUSES,
+  type CourseShift,
+  type CourseStatus,
+} from './create-course.dto.js';
 
 export class UpdateCourseDto {
   @IsOptional()
@@ -32,4 +39,21 @@ export class UpdateCourseDto {
   @Min(1900)
   @Max(2100)
   schoolYear?: number;
+
+  /** Aula física del curso; null explícito la borra. */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(60)
+  classroom?: string | null;
+
+  @IsOptional()
+  @IsIn(COURSE_STATUSES)
+  status?: CourseStatus;
+
+  /** Membresía docente preceptora; null explícito la desasigna. */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsUUID()
+  homeroomTeacherMembershipId?: string | null;
 }

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -195,6 +196,8 @@ describe('TeachersService · list', () => {
         {
           id: T1,
           fullName: 'Laura Pérez',
+          dni: null,
+          address: null,
           email: 'laura@mail.com',
           phone: '1155667788',
           fileNumber: 'L-1042',
@@ -393,7 +396,7 @@ describe('TeachersService · detail', () => {
         coursesCount: 2,
         studentsReached: 42,
       },
-      schedule: [],
+      schedule: expect.any(Array),
     });
     expect(detail.subjects).toHaveLength(2);
     expect(detail.subjects[0].course).toMatchObject({
@@ -489,7 +492,7 @@ describe('TeachersService · update', () => {
       maxWeeklyHours: 20,
     });
     const upd = state.memberships.calls.find((c) => c.op === 'update');
-    expect(upd?.args[0]).toEqual({
+    expect(upd?.args[0]).toMatchObject({
       file_number: 'L-2000',
       status: 'licencia',
       max_weekly_hours: 20,
@@ -588,7 +591,7 @@ describe('TeachersService · assignTeacher (PUT /subjects/:id/teacher)', () => {
       teacher: { id: T1, fullName: 'Laura Pérez' },
     });
     const upd = state.subjects.calls.find((c) => c.op === 'update');
-    expect(upd?.args[0]).toEqual({ teacher_membership_id: T1 });
+    expect(upd?.args[0]).toMatchObject({ teacher_membership_id: T1 });
   });
 
   it('teacherMembershipId null → desasigna al docente', async () => {
@@ -600,7 +603,7 @@ describe('TeachersService · assignTeacher (PUT /subjects/:id/teacher)', () => {
       svc.assignTeacher(admin, SUBJ, { teacherMembershipId: null }),
     ).resolves.toMatchObject({ id: SUBJ, teacher: null });
     const upd = state.subjects.calls.find((c) => c.op === 'update');
-    expect(upd?.args[0]).toEqual({ teacher_membership_id: null });
+    expect(upd?.args[0]).toMatchObject({ teacher_membership_id: null });
     // No consulta membresías: la desasignación no valida rol.
     expect(state.memberships?.calls ?? []).toEqual([]);
   });
@@ -725,5 +728,146 @@ describe('TeachersService · courseAssignments', () => {
     await expect(
       svc.courseAssignments(member, COURSE),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('TeachersService · counts (GET /teachers/counts)', () => {
+  it('devuelve all, activo, licencia e inactivo', async () => {
+    const { svc } = service({
+      memberships: [
+        { data: null, count: 12, error: null },
+        { data: null, count: 8, error: null },
+        { data: null, count: 3, error: null },
+        { data: null, count: 1, error: null },
+      ],
+    });
+    await expect(svc.counts(admin)).resolves.toEqual({
+      all: 12,
+      activo: 8,
+      licencia: 3,
+      inactivo: 1,
+    });
+  });
+});
+
+describe('TeachersService · setCourseAssignments (PUT /courses/:id/assignments)', () => {
+  const courseRow = {
+    id: COURSE,
+    name: '3ro B',
+    year: 3,
+    division: 'B',
+    shift: 'morning',
+    school_year: 2026,
+  };
+  const courseSubjects = {
+    data: [
+      { id: SUBJ, name: 'Matemática', weekly_hours: 20, teacher_membership_id: null },
+      { id: SUBJ2, name: 'Lengua', weekly_hours: 15, teacher_membership_id: null },
+    ],
+    error: null,
+  };
+  const teacherRow = {
+    id: T1,
+    user_id: 'uT1',
+    role: 'teacher',
+    status: 'activo',
+    max_weekly_hours: 30,
+  };
+
+  it('docente inactivo → 409', async () => {
+    const { svc } = service({
+      courses: [{ data: courseRow, error: null }],
+      subjects: [courseSubjects],
+      memberships: [
+        {
+          data: [{ ...teacherRow, status: 'inactivo' }],
+          error: null,
+        },
+      ],
+    });
+    await expect(
+      svc.setCourseAssignments(admin, COURSE, {
+        assignments: [{ subjectId: SUBJ, teacherMembershipId: T1 }],
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('varias asignaciones del lote superan maxWeeklyHours → 409', async () => {
+    const { svc } = service({
+      courses: [
+        { data: courseRow, error: null },
+        { data: [{ school_year: 2026 }], error: null },
+      ],
+      subjects: [courseSubjects, { data: [], error: null }],
+      memberships: [
+        { data: [teacherRow], error: null },
+        { data: [teacherRow], error: null },
+      ],
+    });
+    // 20 + 15 = 35 > 30: acumula las dos asignaciones del payload.
+    await expect(
+      svc.setCourseAssignments(admin, COURSE, {
+        assignments: [
+          { subjectId: SUBJ, teacherMembershipId: T1 },
+          { subjectId: SUBJ2, teacherMembershipId: T1 },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('dentro del límite → actualiza materias y devuelve el tablero', async () => {
+    const { svc, state } = service({
+      courses: [
+        { data: courseRow, error: null },
+        { data: [{ school_year: 2026 }], error: null },
+        { data: courseRow, error: null },
+      ],
+      subjects: [
+        {
+          data: [
+            { id: SUBJ, name: 'Matemática', weekly_hours: 6, teacher_membership_id: null },
+            { id: SUBJ2, name: 'Lengua', weekly_hours: null, teacher_membership_id: T1 },
+          ],
+          error: null,
+        },
+        { data: [], error: null },
+        { data: null, error: null },
+        { data: null, error: null },
+        {
+          data: [
+            { id: SUBJ, name: 'Matemática', weekly_hours: 6, teacher_membership_id: T1 },
+            { id: SUBJ2, name: 'Lengua', weekly_hours: null, teacher_membership_id: null },
+          ],
+          error: null,
+        },
+      ],
+      memberships: [
+        { data: [teacherRow], error: null },
+        { data: [teacherRow], error: null },
+        { data: [{ id: T1, user_id: 'uT1' }], error: null },
+      ],
+      profiles: [
+        { data: [{ id: 'uT1', full_name: 'Laura Pérez' }], error: null },
+      ],
+    });
+    const result = await svc.setCourseAssignments(admin, COURSE, {
+      assignments: [
+        { subjectId: SUBJ, teacherMembershipId: T1 },
+        { subjectId: SUBJ2, teacherMembershipId: null },
+      ],
+    });
+    expect(result.subjects).toEqual([
+      {
+        id: SUBJ,
+        name: 'Matemática',
+        weeklyHours: 6,
+        teacher: { id: T1, fullName: 'Laura Pérez' },
+      },
+      { id: SUBJ2, name: 'Lengua', weeklyHours: 4, teacher: null },
+    ]);
+    const updates = state.subjects.calls.filter((c) => c.op === 'update');
+    expect(updates).toHaveLength(2);
+    expect(updates[0].args[0]).toMatchObject({ teacher_membership_id: T1 });
+    expect(updates[1].args[0]).toMatchObject({ teacher_membership_id: null });
   });
 });

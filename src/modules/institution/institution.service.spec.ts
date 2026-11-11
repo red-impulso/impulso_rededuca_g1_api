@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { Membership } from '../../auth/membership.guard.js';
@@ -99,9 +100,23 @@ describe('InstitutionService · update', () => {
     ).resolves.toEqual({
       id: INST,
       name: 'Colegio San Martín',
+      code: null,
+      level: null,
       address: 'Av. Siempre Viva 742',
+      city: null,
+      province: null,
+      phone: null,
+      email: null,
+      website: null,
+      logoUrl: null,
+      schoolYear: null,
       levels: ['Primario', 'Secundario'],
+      schedule: null,
+      familyCommunications: true,
+      dailyAttendance: true,
+      status: 'activa',
       createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: null,
     });
     expect(state.institutions.calls).toContainEqual({
       op: 'eq',
@@ -109,7 +124,7 @@ describe('InstitutionService · update', () => {
     });
     expect(
       state.institutions.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({
+    ).toMatchObject({
       name: 'Colegio San Martín',
       address: 'Av. Siempre Viva 742',
       levels: ['Primario', 'Secundario'],
@@ -146,7 +161,7 @@ describe('InstitutionService · update', () => {
     await svc.update(admin, { address: '   ' });
     expect(
       state.institutions.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({ address: null });
+    ).toMatchObject({ address: null });
   });
 
   it('levels con vacíos → se limpian antes de guardar', async () => {
@@ -156,7 +171,7 @@ describe('InstitutionService · update', () => {
     await svc.update(admin, { levels: [' Primario ', '', 'Secundario'] });
     expect(
       state.institutions.calls.find((c) => c.op === 'update')?.args[0],
-    ).toEqual({ levels: ['Primario', 'Secundario'] });
+    ).toMatchObject({ levels: ['Primario', 'Secundario'] });
   });
 
   it('name vacío → 400 y no escribe', async () => {
@@ -180,5 +195,66 @@ describe('InstitutionService · update', () => {
       BadRequestException,
     );
     expect(state.institutions?.calls ?? []).toEqual([]);
+  });
+});
+
+describe('InstitutionService · get (GET /institution)', () => {
+  it('devuelve la ficha completa filtrando por la institución activa', async () => {
+    const { svc, state } = service({
+      institutions: [
+        {
+          data: {
+            ...institutionRow,
+            code: 'ESC-001',
+            level: 'Primario',
+            city: 'Rosario',
+            province: 'Santa Fe',
+            phone: '3411234567',
+            email: 'info@esc.edu',
+            website: 'https://esc.edu',
+            logo_url: 'https://cdn/logo.png',
+            school_year: 2026,
+            schedule: { morning: '8-12' },
+            family_communications: true,
+            daily_attendance: false,
+            status: 'activa',
+            updated_at: '2026-11-11T10:00:00Z',
+          },
+          error: null,
+        },
+      ],
+    });
+    await expect(svc.get(admin)).resolves.toEqual({
+      id: INST,
+      name: 'Colegio San Martín',
+      code: 'ESC-001',
+      level: 'Primario',
+      address: 'Av. Siempre Viva 742',
+      city: 'Rosario',
+      province: 'Santa Fe',
+      phone: '3411234567',
+      email: 'info@esc.edu',
+      website: 'https://esc.edu',
+      logoUrl: 'https://cdn/logo.png',
+      schoolYear: 2026,
+      levels: ['Primario', 'Secundario'],
+      schedule: { morning: '8-12' },
+      familyCommunications: true,
+      dailyAttendance: false,
+      status: 'activa',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-11-11T10:00:00Z',
+    });
+    expect(state.institutions.calls).toContainEqual({
+      op: 'eq',
+      args: ['id', INST],
+    });
+  });
+
+  it('institución inexistente → 404', async () => {
+    const { svc } = service({
+      institutions: [{ data: null, error: null }],
+    });
+    await expect(svc.get(admin)).rejects.toBeInstanceOf(NotFoundException);
   });
 });

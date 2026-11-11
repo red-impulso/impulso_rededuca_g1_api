@@ -9,6 +9,7 @@ import type { Membership } from '../../auth/membership.guard.js';
 import { SupabaseService } from '../../supabase/supabase.service.js';
 import {
   COURSE_SHIFTS,
+  COURSE_STATUSES,
   type CourseShift,
   type CreateCourseDto,
 } from './dto/create-course.dto.js';
@@ -21,6 +22,10 @@ export interface CourseListItem {
   division?: string;
   shift?: string | null;
   schoolYear?: number;
+  status: string;
+  classroom: string | null;
+  studentsCount: number;
+  homeroomTeacher: { id: string; fullName: string | null } | null;
 }
 
 interface CourseKey {
@@ -33,7 +38,8 @@ interface CourseKey {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const COURSE_COLUMNS = 'id, name, year, division, shift, school_year';
+const COURSE_COLUMNS =
+  'id, name, year, division, shift, school_year, status, classroom, homeroom_teacher_membership_id';
 
 const DUPLICATE_MSG =
   'Ya existe un curso con el mismo año, división, turno y ciclo lectivo';
@@ -44,8 +50,8 @@ export class CoursesService {
 
   /**
    * Cursos de la institución activa ordenados por ciclo lectivo descendente,
-   * año y división ascendente. Solo admin/director: el guard filtra por rol
-   * y el servicio lo vuelve a verificar por defensa.
+   * año y división ascendente. Cada curso trae la cantidad de alumnos
+   * activos, el preceptor asignado, su estado y el aula.
    */
   async list(membership: Membership): Promise<CourseListItem[]> {
     this.assertStaff(membership);
@@ -59,7 +65,15 @@ export class CoursesService {
       .order('division');
     if (error) throw error;
 
-    return (data ?? []).map(mapCourse);
+    return this.enrich(membership.institutionId, data ?? []);
+  }
+
+  /** Detalle completo de un curso de la institución activa. */
+  async detail(membership: Membership, id: string): Promise<CourseListItem> {
+    this.assertStaff(membership);
+    const course = await this.courseFor(membership, id);
+    const [item] = await this.enrich(membership.institutionId, [course]);
+    return item;
   }
 
   /**
@@ -72,6 +86,7 @@ export class CoursesService {
   ): Promise<CourseListItem> {
     this.assertStaff(membership);
     const key = this.validateKey(dto);
+    const extras = await this.validateExtras(membership, dto);
 
     await this.ensureUnique(membership.institutionId, key);
 
@@ -84,6 +99,7 @@ export class CoursesService {
         division: key.division,
         shift: key.shift,
         school_year: key.schoolYear,
+        ...extras,
       })
       .select(COURSE_COLUMNS)
       .single();
@@ -91,12 +107,14 @@ export class CoursesService {
       if (error.code === '23505') throw new ConflictException(DUPLICATE_MSG);
       throw error;
     }
-    return mapCourse(data);
+    const [item] = await this.enrich(membership.institutionId, [data]);
+    return item;
   }
 
   /**
    * Actualiza un curso de la institución activa. Rechaza con 409 si el
-   * cambio colisiona con otro curso del mismo ciclo lectivo.
+   * cambio de año/división/turno/ciclo colisiona con otro curso del mismo
+   * ciclo lectivo.
    */
   async update(
     membership: Membership,
@@ -105,37 +123,42 @@ export class CoursesService {
   ): Promise<CourseListItem> {
     this.assertStaff(membership);
     const current = await this.courseFor(membership, id);
-    if (
-      dto?.year === undefined &&
-      dto?.division === undefined &&
-      dto?.shift === undefined &&
-      dto?.schoolYear === undefined
-    ) {
-      throw new BadRequestException(
-        'Debe enviar al menos un campo para actualizar',
+    const extras = await this.validateExtras(membership, dto);
+    const keyFields =
+      dto?.year !== undefined ||
+      dto?.division !== undefined ||
+      dto?.shift !== undefined ||
+      dto?.schoolYear !== undefined;
+
+    const patch: Record<string, unknown> = { ...extras };
+    if (keyFields) {
+      const key = this.validateKey(
+        {
+          year: dto?.year ?? current.year,
+          division: dto?.division ?? current.division,
+          shift: dto?.shift ?? current.shift,
+          schoolYear: dto?.schoolYear ?? current.school_year,
+        },
+        true,
       );
-    }
-
-    const key = this.validateKey(
-      {
-        year: dto?.year ?? current.year,
-        division: dto?.division ?? current.division,
-        shift: dto?.shift ?? current.shift,
-        schoolYear: dto?.schoolYear ?? current.school_year,
-      },
-      true,
-    );
-    await this.ensureUnique(membership.institutionId, key, id);
-
-    const { data, error } = await this.supabase.admin
-      .from('courses')
-      .update({
+      await this.ensureUnique(membership.institutionId, key, id);
+      Object.assign(patch, {
         name: `${key.year}° ${key.division}`,
         year: key.year,
         division: key.division,
         shift: key.shift,
         school_year: key.schoolYear,
-      })
+      });
+    }
+    if (!Object.keys(patch).length) {
+      throw new BadRequestException(
+        'Debe enviar al menos un campo para actualizar',
+      );
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('courses')
+      .update(patch)
       .eq('id', id)
       .select(COURSE_COLUMNS)
       .single();
@@ -143,7 +166,8 @@ export class CoursesService {
       if (error.code === '23505') throw new ConflictException(DUPLICATE_MSG);
       throw error;
     }
-    return mapCourse(data);
+    const [item] = await this.enrich(membership.institutionId, [data]);
+    return item;
   }
 
   /**
@@ -198,6 +222,85 @@ export class CoursesService {
     return data;
   }
 
+  /**
+   * Agrega a cada curso la cantidad de alumnos activos y el preceptor
+   * (membership → profile) en dos consultas agrupadas.
+   */
+  private async enrich(
+    institutionId: string,
+    rows: any[],
+  ): Promise<CourseListItem[]> {
+    if (!rows.length) return [];
+    const counts = await this.studentsByCourse(
+      institutionId,
+      rows.map((r) => r.id as string),
+    );
+    const teachers = await this.teachersById(
+      unique(rows.map((r) => r.homeroom_teacher_membership_id)),
+    );
+    return rows.map((r) =>
+      mapCourse(
+        r,
+        counts.get(r.id) ?? 0,
+        r.homeroom_teacher_membership_id
+          ? (teachers.get(r.homeroom_teacher_membership_id) ?? {
+              id: r.homeroom_teacher_membership_id,
+              fullName: null,
+            })
+          : null,
+      ),
+    );
+  }
+
+  /** Cantidad de alumnos activos por curso. */
+  private async studentsByCourse(
+    institutionId: string,
+    courseIds: string[],
+  ): Promise<Map<string, number>> {
+    const { data, error } = await this.supabase.admin
+      .from('students')
+      .select('course_id')
+      .eq('institution_id', institutionId)
+      .eq('status', 'active')
+      .in('course_id', courseIds);
+    if (error) throw error;
+    const counts = new Map<string, number>();
+    for (const row of data ?? []) {
+      const id = row.course_id as string;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /** Mapa membership_id → { id, fullName } para los docentes dados. */
+  private async teachersById(ids: string[]) {
+    const map = new Map<string, { id: string; fullName: string | null }>();
+    if (!ids.length) return map;
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select('id, user_id')
+      .in('id', ids);
+    if (error) throw error;
+    const rows = data ?? [];
+    const userIds = unique(rows.map((m: any) => m.user_id));
+    const profiles = new Map<string, string | null>();
+    if (userIds.length) {
+      const { data: profs, error: profsError } = await this.supabase.admin
+        .from('profiles')
+        .select('id, full_name')
+        .in('id', userIds);
+      if (profsError) throw profsError;
+      for (const p of profs ?? []) profiles.set(p.id, p.full_name);
+    }
+    for (const m of rows) {
+      map.set(m.id, {
+        id: m.id,
+        fullName: profiles.get(m.user_id) ?? null,
+      });
+    }
+    return map;
+  }
+
   /** Valida y normaliza año, división, turno y ciclo lectivo. */
   private validateKey(
     dto: {
@@ -247,6 +350,74 @@ export class CoursesService {
   }
 
   /**
+   * Valida los campos complementarios (aula, estado y preceptor) y devuelve
+   * las columnas a persistir.
+   */
+  private async validateExtras(
+    membership: Membership,
+    dto: {
+      classroom?: string | null;
+      status?: string;
+      homeroomTeacherMembershipId?: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
+    const patch: Record<string, unknown> = {};
+
+    if (dto?.classroom !== undefined) {
+      patch.classroom =
+        dto.classroom === null ? null : dto.classroom.trim() || null;
+    }
+    if (dto?.status !== undefined) {
+      if (!(COURSE_STATUSES as readonly string[]).includes(dto.status)) {
+        throw new BadRequestException(
+          "status debe ser 'active', 'inactive' o 'draft'",
+        );
+      }
+      patch.status = dto.status;
+    }
+    if (dto?.homeroomTeacherMembershipId !== undefined) {
+      if (dto.homeroomTeacherMembershipId === null) {
+        patch.homeroom_teacher_membership_id = null;
+      } else {
+        const teacher = await this.teacherMembershipFor(
+          membership,
+          dto.homeroomTeacherMembershipId,
+        );
+        patch.homeroom_teacher_membership_id = teacher.id;
+      }
+    }
+    return patch;
+  }
+
+  /**
+   * Membresía docente dentro de la institución activa; rechaza si no existe
+   * o no tiene rol 'teacher'.
+   */
+  private async teacherMembershipFor(membership: Membership, id: string) {
+    if (typeof id !== 'string' || !UUID_RE.test(id)) {
+      throw new BadRequestException('homeroomTeacherMembershipId inválido');
+    }
+    const { data, error } = await this.supabase.admin
+      .from('memberships')
+      .select('id, role')
+      .eq('id', id)
+      .eq('institution_id', membership.institutionId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      throw new BadRequestException(
+        'homeroomTeacherMembershipId no pertenece a la institución',
+      );
+    }
+    if (data.role !== 'teacher') {
+      throw new BadRequestException(
+        'homeroomTeacherMembershipId debe corresponder a una membresía con rol teacher',
+      );
+    }
+    return data;
+  }
+
+  /**
    * Rechaza con 409 si ya existe un curso con la misma clave dentro de la
    * institución. La comparación de shift se hace en memoria porque la
    * columna admite NULL y UNIQUE de Postgres no los iguala.
@@ -272,7 +443,11 @@ export class CoursesService {
   }
 }
 
-function mapCourse(c: any): CourseListItem {
+function mapCourse(
+  c: any,
+  studentsCount: number,
+  homeroomTeacher: { id: string; fullName: string | null } | null,
+): CourseListItem {
   return {
     id: c.id,
     name: c.name,
@@ -280,5 +455,13 @@ function mapCourse(c: any): CourseListItem {
     division: c.division,
     shift: c.shift ?? null,
     schoolYear: c.school_year,
+    status: c.status ?? 'active',
+    classroom: c.classroom ?? null,
+    studentsCount,
+    homeroomTeacher,
   };
+}
+
+function unique(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v)))];
 }

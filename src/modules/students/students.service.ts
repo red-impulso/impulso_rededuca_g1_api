@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Membership } from '../../auth/membership.guard.js';
+import { storeExport, toCsv } from '../../common/export-storage.js';
 import { SupabaseService } from '../../supabase/supabase.service.js';
 import {
   CREATABLE_STATUSES,
@@ -101,10 +102,21 @@ export interface StudentProfile {
   observations: { academic: string | null; institutional: string | null };
 }
 
+export interface StudentActivityItem {
+  id: string;
+  kind: 'grade' | 'attendance' | 'announcement' | 'event';
+  title: string;
+  occurredAt: string;
+}
+
 export interface ListStudentsParams {
   courseId?: string;
   q?: string;
   status?: string;
+  shift?: string;
+  division?: string;
+  schoolYear?: number;
+  sort?: string;
   page?: number;
   limit?: number;
 }
@@ -112,6 +124,20 @@ export interface ListStudentsParams {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const STUDENT_SORTS = [
+  'lastName',
+  '-lastName',
+  'course',
+  'enrollmentDate',
+] as const;
+
+const ATTENDANCE_LABELS: Record<string, string> = {
+  present: 'presente',
+  absent: 'ausente',
+  late: 'tarde',
+  justified: 'ausencia justificada',
+};
 
 /** Promedio por materia a partir del cual la materia cuenta como aprobada. */
 const PASSING_GRADE = 6;
@@ -122,8 +148,12 @@ const DUPLICATE_DNI_MSG =
 const STUDENT_COLUMNS =
   'id, course_id, first_name, last_name, dni, file_number, birth_date, gender, address, phone, email, status, enrollment_date, observation_academic, observation_institutional, created_at, updated_at';
 
-const LIST_COLUMNS =
-  'id, first_name, last_name, dni, file_number, status, updated_at, courses(id, year, division, shift, school_year)';
+const LIST_BASE_COLUMNS =
+  'id, first_name, last_name, dni, file_number, status, updated_at';
+
+const LIST_COURSE_COLUMNS = 'id, year, division, shift, school_year';
+
+const LIST_COLUMNS = `${LIST_BASE_COLUMNS}, courses(${LIST_COURSE_COLUMNS})`;
 
 const PROFILE_COLUMNS = `${STUDENT_COLUMNS}, courses(id, year, division, shift, school_year)`;
 
@@ -141,23 +171,55 @@ export class StudentsService {
     params: ListStudentsParams = {},
   ): Promise<StudentListResult> {
     this.assertStaff(membership);
-    const { courseId, status, page, limit } = this.validateListParams(params);
+    const { courseId, status, shift, division, schoolYear, sort, page, limit } =
+      this.validateListParams(params);
     const term = this.searchTerm(params.q);
+
+    // Filtrar por campos del curso embebido (o ordenar por él) exige un
+    // inner join: con el join por defecto PostgREST ignora el filtro.
+    const innerCourse = Boolean(
+      shift || division || schoolYear !== undefined || sort === 'course',
+    );
+    const columns = innerCourse
+      ? `${LIST_BASE_COLUMNS}, courses!inner(${LIST_COURSE_COLUMNS})`
+      : LIST_COLUMNS;
 
     const from = (page - 1) * limit;
     let query = this.supabase.admin
       .from('students')
-      .select(LIST_COLUMNS, { count: 'exact' })
+      .select(columns, { count: 'exact' })
       .eq('institution_id', membership.institutionId)
-      .order('last_name')
-      .order('first_name')
       .range(from, from + limit - 1);
     if (courseId) query = query.eq('course_id', courseId);
     if (status) query = query.eq('status', status);
+    if (shift) query = query.eq('courses.shift', shift);
+    if (division) query = query.eq('courses.division', division);
+    if (schoolYear !== undefined) {
+      query = query.eq('courses.school_year', schoolYear);
+    }
     if (term) {
       query = query.or(
         `first_name.ilike.%${term}%,last_name.ilike.%${term}%,dni.ilike.%${term}%,file_number.ilike.%${term}%`,
       );
+    }
+
+    if (sort === '-lastName') {
+      query = query
+        .order('last_name', { ascending: false })
+        .order('first_name', { ascending: false });
+    } else if (sort === 'course') {
+      query = query
+        .order('year', { referencedTable: 'courses' })
+        .order('division', { referencedTable: 'courses' })
+        .order('last_name')
+        .order('first_name');
+    } else if (sort === 'enrollmentDate') {
+      query = query
+        .order('enrollment_date', { ascending: false, nullsFirst: false })
+        .order('last_name')
+        .order('first_name');
+    } else {
+      query = query.order('last_name').order('first_name');
     }
 
     const { data, count, error } = await query;
@@ -233,6 +295,139 @@ export class StudentsService {
   }
 
   /**
+   * Actividad reciente del alumno: últimas notas, asistencias y comunicados
+   * (institución, su curso o dirigidos a él), ordenados por fecha
+   * descendente y limitados por `limit` (default 10).
+   */
+  async activity(
+    membership: Membership,
+    id: string,
+    limit = 10,
+  ): Promise<{ data: StudentActivityItem[] }> {
+    this.assertStaff(membership);
+    const student = await this.studentFor(membership, id);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new BadRequestException('limit debe ser un entero entre 1 y 50');
+    }
+    const institutionId = membership.institutionId;
+    const courseId = student.course_id as string | null;
+
+    const [grades, attendance, announcements] = await Promise.all([
+      this.supabase.admin
+        .from('grades')
+        .select('id, value, updated_at, subjects(name)')
+        .eq('institution_id', institutionId)
+        .eq('student_id', id)
+        .order('updated_at', { ascending: false })
+        .limit(limit),
+      this.supabase.admin
+        .from('attendance_records')
+        .select('id, status, date, created_at')
+        .eq('institution_id', institutionId)
+        .eq('student_id', id)
+        .order('date', { ascending: false })
+        .limit(limit),
+      this.studentAnnouncements(institutionId, id, courseId, limit),
+    ]);
+    if (grades.error) throw grades.error;
+    if (attendance.error) throw attendance.error;
+
+    const events: StudentActivityItem[] = [];
+    for (const g of grades.data ?? []) {
+      const subject = Array.isArray(g.subjects) ? g.subjects[0] : g.subjects;
+      events.push({
+        id: `grade-${g.id}`,
+        kind: 'grade',
+        title: subject?.name
+          ? `Nota en ${subject.name}: ${g.value ?? 'sin calificar'}`
+          : 'Nota cargada',
+        occurredAt: g.updated_at ?? '',
+      });
+    }
+    for (const a of attendance.data ?? []) {
+      events.push({
+        id: `attendance-${a.id}`,
+        kind: 'attendance',
+        title: `Asistencia: ${ATTENDANCE_LABELS[a.status] ?? a.status}`,
+        occurredAt: a.created_at ?? `${a.date}T00:00:00.000Z`,
+      });
+    }
+    for (const a of announcements.data ?? []) {
+      events.push({
+        id: `announcement-${a.id}`,
+        kind: 'announcement',
+        title: a.title,
+        occurredAt: a.created_at ?? '',
+      });
+    }
+
+    events.sort((x, y) => (x.occurredAt < y.occurredAt ? 1 : -1));
+    return { data: events.slice(0, limit) };
+  }
+
+  /**
+   * Enlace de descarga del informe del estudiante. Genera un CSV con la
+   * ficha del alumno y lo publica en storage; si el bucket no está
+   * configurado devuelve una URL simulada.
+   */
+  async report(
+    membership: Membership,
+    id: string,
+  ): Promise<{ url: string }> {
+    this.assertStaff(membership);
+    const student = await this.studentFor(membership, id);
+
+    const csv = toCsv(
+      ['campo', 'valor'],
+      [
+        ['nombre', `${student.first_name} ${student.last_name}`],
+        ['dni', student.dni],
+        ['legajo', student.file_number],
+        ['estado', student.status],
+        ['fecha_inscripcion', student.enrollment_date],
+        ['fecha_nacimiento', student.birth_date],
+        ['genero', student.gender],
+        ['direccion', student.address],
+        ['telefono', student.phone],
+        ['email', student.email],
+      ],
+    );
+    const url = await storeExport(
+      this.supabase.admin,
+      `reports/students/${id}.csv`,
+      csv,
+      'text/csv',
+    );
+    return { url };
+  }
+
+  /**
+   * Comunicados visibles para el alumno: de toda la institución, de su
+   * curso o dirigidos específicamente a él.
+   */
+  private async studentAnnouncements(
+    institutionId: string,
+    studentId: string,
+    courseId: string | null,
+    limit: number,
+  ) {
+    const filters = [
+      'scope.eq.institution',
+      `and(scope.eq.student,student_id.eq.${studentId})`,
+    ];
+    if (courseId) {
+      filters.push(`and(scope.eq.course,course_id.eq.${courseId})`);
+    }
+    return this.supabase.admin
+      .from('announcements')
+      .select('id, title, created_at')
+      .eq('institution_id', institutionId)
+      .or(filters.join(','))
+      .order('created_at', { ascending: false })
+      .limit(limit);
+  }
+
+  /**
    * Alta de alumno en la institución activa. Rechaza con 409 si el DNI ya
    * existe en la institución y con 404 si el curso no pertenece a ella.
    */
@@ -292,7 +487,7 @@ export class StudentsService {
     if (changes.courseId !== undefined) {
       await this.courseFor(membership, changes.courseId as string);
     }
-    if (changes.dni !== undefined && changes.dni !== current.dni) {
+    if (changes.dni && changes.dni !== current.dni) {
       await this.ensureDniUnique(
         membership.institutionId,
         changes.dni as string,
@@ -494,7 +689,47 @@ export class StudentsService {
         "status debe ser 'active', 'inactive' o 'draft'",
       );
     }
-    return { courseId, status: status || undefined, page, limit };
+    const shift = params.shift || undefined;
+    if (
+      shift !== undefined &&
+      !['morning', 'afternoon', 'evening'].includes(shift)
+    ) {
+      throw new BadRequestException(
+        "shift debe ser 'morning', 'afternoon' o 'evening'",
+      );
+    }
+    const division =
+      typeof params.division === 'string' && params.division.trim()
+        ? params.division.trim()
+        : undefined;
+    const schoolYear = params.schoolYear;
+    if (
+      schoolYear !== undefined &&
+      (!Number.isInteger(schoolYear) || schoolYear < 1900 || schoolYear > 2100)
+    ) {
+      throw new BadRequestException(
+        'schoolYear debe ser un entero entre 1900 y 2100',
+      );
+    }
+    const sort = params.sort || undefined;
+    if (
+      sort !== undefined &&
+      !(STUDENT_SORTS as readonly string[]).includes(sort)
+    ) {
+      throw new BadRequestException(
+        "sort debe ser 'lastName', '-lastName', 'course' o 'enrollmentDate'",
+      );
+    }
+    return {
+      courseId,
+      status: status || undefined,
+      shift,
+      division,
+      schoolYear,
+      sort,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -558,7 +793,7 @@ export class StudentsService {
       changes.lastName = this.requiredText(dto.lastName, 'lastName');
     }
     if (dto.dni !== undefined) {
-      changes.dni = this.requiredText(dto.dni, 'dni');
+      changes.dni = this.optionalText(dto.dni);
     }
     if (dto.fileNumber !== undefined) {
       changes.fileNumber = this.optionalText(dto.fileNumber);
