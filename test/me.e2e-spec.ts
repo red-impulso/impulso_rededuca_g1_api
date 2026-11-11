@@ -82,10 +82,12 @@ describe('GET /me (e2e)', () => {
             id: 'm1',
             institutionId: 'i1',
             institutionName: 'Escuela 1',
-            institutionStatus: null,
+            institutionStatus: 'activa',
+            slug: 'escuela-1',
             city: null,
             level: null,
             role: 'admin',
+            status: null,
           },
         ],
       }));

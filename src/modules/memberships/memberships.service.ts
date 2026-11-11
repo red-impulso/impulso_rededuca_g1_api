@@ -36,13 +36,17 @@ const LAST_ADMIN_ROLE_MSG =
 const LAST_ADMIN_DELETE_MSG =
   'No se puede eliminar al único administrador de la institución';
 
+const PROMOTE_ADMIN_MSG =
+  'Solo un administrador puede asignar el rol de administrador';
+
 @Injectable()
 export class MembershipsService {
   constructor(private readonly supabase: SupabaseService) {}
 
   /**
    * Cambia el rol de una membresía de la institución activa. Rechaza con
-   * 404 si la membresía no pertenece a la institución y con 409 si la
+   * 404 si la membresía no pertenece a la institución, con 403 si un
+   * directivo intenta promover a alguien a 'admin' y con 409 si la
    * operación degradaría al único administrador activo (regla del último
    * administrador).
    */
@@ -51,9 +55,13 @@ export class MembershipsService {
     id: string,
     dto: UpdateMembershipRoleDto,
   ): Promise<MembershipRecord> {
-    this.assertAdmin(membership);
+    this.assertStaff(membership);
     const target = await this.membershipFor(membership, id);
     const role = this.validateRole(dto);
+
+    if (role === 'admin' && membership.role !== 'admin') {
+      throw new ForbiddenException(PROMOTE_ADMIN_MSG);
+    }
 
     if (target.role === 'admin' && role !== 'admin') {
       const admins = await this.activeAdminsCount(membership.institutionId);
@@ -77,7 +85,7 @@ export class MembershipsService {
    * institución activa y con 409 si es el único administrador activo.
    */
   async remove(membership: Membership, id: string): Promise<void> {
-    this.assertAdmin(membership);
+    this.assertStaff(membership);
     const target = await this.membershipFor(membership, id);
 
     if (target.role === 'admin') {
@@ -95,11 +103,11 @@ export class MembershipsService {
 
   /**
    * Reactiva una membresía dada de baja lógica: status vuelve a 'active'
-   * y se limpia el motivo de bloqueo. Solo admin; 404 si la membresía no
-   * pertenece a la institución activa.
+   * y se limpia el motivo de bloqueo. 404 si la membresía no pertenece a
+   * la institución activa.
    */
   async reactivate(membership: Membership, id: string): Promise<void> {
-    this.assertAdmin(membership);
+    this.assertStaff(membership);
     await this.membershipFor(membership, id);
 
     const { error } = await this.supabase.admin
@@ -114,11 +122,16 @@ export class MembershipsService {
     if (error) throw error;
   }
 
-  /** Solo admin puede administrar usuarios y roles. */
-  private assertAdmin(membership: Membership) {
-    if (membership.role !== 'admin') {
+  /**
+   * Admin y director administran usuarios y membresías. Las únicas
+   * operaciones vedadas al directivo son promover a alguien a 'admin'
+   * (verificado en updateRole) y degradar/eliminar al último
+   * administrador activo (verificado por conteo).
+   */
+  private assertStaff(membership: Membership) {
+    if (membership.role !== 'admin' && membership.role !== 'director') {
       throw new ForbiddenException(
-        'Solo admin puede administrar usuarios y roles',
+        'Solo admin o director pueden administrar usuarios y roles',
       );
     }
   }

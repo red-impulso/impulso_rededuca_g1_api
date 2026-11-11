@@ -334,6 +334,35 @@ describe('TeachersService · list', () => {
     expect(state.memberships.calls.some((c) => c.op === 'range')).toBe(false);
   });
 
+  it("sort 'name' ordena ascendente por nombre de perfil en base", async () => {
+    const { svc, state } = service({
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [{ data: [teacherRow], count: 1, error: null }],
+      subjects: [{ data: [], error: null }],
+    });
+    await svc.list(admin, { sort: 'name' });
+    expect(state.memberships.calls).toContainEqual({
+      op: 'order',
+      args: ['full_name', { referencedTable: 'profiles' }],
+    });
+    expect(state.memberships.calls).toContainEqual({
+      op: 'range',
+      args: [0, 24],
+    });
+  });
+
+  it("sort '-weeklyHours' ordena en memoria por carga horaria", async () => {
+    const { svc, state } = service({
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [{ data: [teacherRow], count: 1, error: null }],
+      subjects: [{ data: subjectRows, error: null }],
+    });
+    const result = await svc.list(admin, { sort: '-weeklyHours' });
+    // Sin paginación en base: el orden se aplica en memoria.
+    expect(state.memberships.calls.some((c) => c.op === 'range')).toBe(false);
+    expect(result.data[0].weeklyHours).toBe(10);
+  });
+
   it('courseId filtra docentes que dictan en ese curso', async () => {
     const { svc, state } = service({
       courses: [{ data: [{ school_year: 2026 }], error: null }],
@@ -728,6 +757,118 @@ describe('TeachersService · courseAssignments', () => {
     await expect(
       svc.courseAssignments(member, COURSE),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('TeachersService · candidates (GET /teachers/candidates)', () => {
+  const SUBJ3 = 'eeeeeeee-0000-0000-0000-000000000003';
+  const subjectFound = {
+    data: { id: SUBJ, course_id: COURSE, weekly_hours: 6 },
+    error: null,
+  };
+  const fisicaDelDocente = {
+    id: SUBJ2,
+    name: 'Física',
+    weekly_hours: 4,
+    teacher_membership_id: T1,
+    course_id: COURSE2,
+    courses: { ...courseRef, id: COURSE2, name: '5to A', year: 5, division: 'A' },
+  };
+
+  it('scheduleConflict reporta solo el choque de bloque horario', async () => {
+    const { svc } = service({
+      subjects: [
+        subjectFound,
+        { data: [fisicaDelDocente], error: null },
+        { data: [{ id: SUBJ }, { id: SUBJ3 }], error: null },
+      ],
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [{ data: [teacherRow], error: null }],
+    });
+    const [cand] = await svc.candidates(admin, { subjectId: SUBJ });
+    // La materia a asignar ocupa el bloque Lunes 08:00-09:00 del curso y
+    // Física pisa ese mismo bloque en la grilla del docente.
+    expect(cand.scheduleConflict).toBe('Física · 5to A · Lunes 08:00-09:00');
+    expect(cand.conflict).toBe(cand.scheduleConflict);
+  });
+
+  it('sin choque de bloque → conflict y scheduleConflict null', async () => {
+    const { svc } = service({
+      subjects: [
+        {
+          data: { id: SUBJ3, course_id: COURSE, weekly_hours: 6 },
+          error: null,
+        },
+        { data: [fisicaDelDocente], error: null },
+        { data: [{ id: SUBJ }, { id: SUBJ3 }], error: null },
+      ],
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [{ data: [teacherRow], error: null }],
+    });
+    // SUBJ3 ocupa Martes 08:00; Física pisa Lunes 08:00 → sin choque.
+    const [cand] = await svc.candidates(admin, { subjectId: SUBJ3 });
+    expect(cand.conflict).toBeNull();
+    expect(cand.scheduleConflict).toBeNull();
+  });
+
+  it('inactivo/licencia/límite no se reportan en conflict (los deriva el cliente)', async () => {
+    const { svc } = service({
+      subjects: [
+        subjectFound,
+        { data: [], error: null },
+        { data: [{ id: SUBJ }, { id: SUBJ3 }], error: null },
+      ],
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [
+        {
+          data: [
+            { ...teacherRow, status: 'inactivo' },
+            { ...teacherRow, status: 'licencia', max_weekly_hours: 0 },
+          ],
+          error: null,
+        },
+      ],
+    });
+    const result = await svc.candidates(admin, { subjectId: SUBJ });
+    expect(result).toHaveLength(2);
+    for (const cand of result) {
+      expect(cand.conflict).toBeNull();
+      expect(cand.scheduleConflict).toBeNull();
+    }
+    expect(result[0].status).toBe('inactivo');
+    expect(result[1].status).toBe('licencia');
+    expect(result[1].maxWeeklyHours).toBe(0);
+  });
+
+  it('sin courseId ni subjectId → sin choque posible y sin consultar bloques', async () => {
+    const { svc, state } = service({
+      subjects: [{ data: [], error: null }],
+      courses: [{ data: [{ school_year: 2026 }], error: null }],
+      memberships: [{ data: [teacherRow], error: null }],
+    });
+    const [cand] = await svc.candidates(admin, {});
+    expect(cand.conflict).toBeNull();
+    expect(cand.scheduleConflict).toBeNull();
+    const blockQuery = state.subjects.calls.some(
+      (c) => c.op === 'eq' && c.args[0] === 'course_id',
+    );
+    expect(blockQuery).toBe(false);
+  });
+
+  it('courseId solo → evalúa choque contra todas las materias del curso', async () => {
+    const { svc } = service({
+      courses: [
+        { data: courseRef, error: null },
+        { data: [{ school_year: 2026 }], error: null },
+      ],
+      memberships: [{ data: [teacherRow], error: null }],
+      subjects: [
+        { data: [fisicaDelDocente], error: null },
+        { data: [{ id: SUBJ }, { id: SUBJ3 }], error: null },
+      ],
+    });
+    const [cand] = await svc.candidates(admin, { courseId: COURSE });
+    expect(cand.scheduleConflict).toBe('Física · 5to A · Lunes 08:00-09:00');
   });
 });
 

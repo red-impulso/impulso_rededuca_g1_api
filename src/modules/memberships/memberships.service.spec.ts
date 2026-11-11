@@ -205,21 +205,60 @@ describe('MembershipsService · updateRole', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it.each([
-    ['director', director],
-    [
-      'teacher',
-      {
-        id: 'mT',
-        userId: 'uT',
-        institutionId: INST,
-        role: 'teacher' as const,
-      },
-    ],
-  ])('rol %s → 403 sin consultar la base', async (_n, member) => {
+  it('director puede cambiar a un rol no-admin (M10)', async () => {
+    const { svc, state } = service({
+      memberships: [
+        { data: teacherRow, error: null },
+        {
+          data: { ...teacherRow, role: 'director', updated_at: '2026-11-10' },
+          error: null,
+        },
+      ],
+    });
+    await expect(
+      svc.updateRole(director, M_TEACHER, { role: 'director' }),
+    ).resolves.toMatchObject({ role: 'director' });
+    expect(state.memberships.calls.some((c) => c.op === 'update')).toBe(true);
+  });
+
+  it('director no puede promover a nadie a admin → 403 sin escribir', async () => {
+    const { svc, state } = service({
+      memberships: [{ data: teacherRow, error: null }],
+    });
+    const attempt = svc.updateRole(director, M_TEACHER, { role: 'admin' });
+    await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(attempt).rejects.toThrow(
+      'Solo un administrador puede asignar el rol de administrador',
+    );
+    expect(state.memberships.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+
+  it('director tampoco puede degradar al último admin → 409', async () => {
+    const { svc, state } = service({
+      memberships: [
+        { data: adminRow, error: null },
+        { data: null, count: 1, error: null },
+      ],
+    });
+    await expect(
+      svc.updateRole(director, M_ADMIN, { role: 'teacher' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(state.memberships.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+
+  it('rol teacher → 403 sin consultar la base', async () => {
     const { svc, state } = service({});
     await expect(
-      svc.updateRole(member, M_TEACHER, { role: 'teacher' }),
+      svc.updateRole(
+        {
+          id: 'mT',
+          userId: 'uT',
+          institutionId: INST,
+          role: 'teacher' as const,
+        },
+        M_TEACHER,
+        { role: 'teacher' },
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(state.memberships?.calls ?? []).toEqual([]);
   });
@@ -286,11 +325,31 @@ describe('MembershipsService · remove', () => {
     );
   });
 
-  it('rol no admin → 403 sin consultar la base', async () => {
+  it('director puede dar de baja una membresía no-admin (M10)', async () => {
+    const { svc, state } = service({
+      memberships: [
+        { data: teacherRow, error: null },
+        { data: null, error: null },
+      ],
+    });
+    await expect(svc.remove(director, M_TEACHER)).resolves.toBeUndefined();
+    const upd = state.memberships.calls.find((c) => c.op === 'update');
+    expect(upd?.args[0]).toMatchObject({ status: 'inactive' });
+  });
+
+  it('rol teacher → 403 sin consultar la base', async () => {
     const { svc, state } = service({});
-    await expect(svc.remove(director, M_TEACHER)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      svc.remove(
+        {
+          id: 'mT',
+          userId: 'uT',
+          institutionId: INST,
+          role: 'teacher' as const,
+        },
+        M_TEACHER,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(state.memberships?.calls ?? []).toEqual([]);
   });
 });

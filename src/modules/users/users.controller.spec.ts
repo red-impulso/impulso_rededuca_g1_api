@@ -19,7 +19,7 @@ const M1 = 'aaaaaaaa-0000-0000-0000-000000000001';
 /** MembershipGuard real con una membresía del rol dado sobre `handler`. */
 function membershipGuardContext(
   handler: object,
-  opts: { role?: string } = {},
+  opts: { role?: string; institutionStatus?: string } = {},
 ) {
   const request: any = {
     headers: { 'x-institution-id': INST },
@@ -33,14 +33,29 @@ function membershipGuardContext(
   const rows = opts.role
     ? [{ id: 'm1', user_id: 'u1', institution_id: INST, role: opts.role }]
     : [];
-  const q: any = {
-    select: () => q,
-    eq: () => q,
-    then: (res: any, rej: any) =>
-      Promise.resolve({ data: rows, error: null }).then(res, rej),
+  const results: Record<string, unknown> = {
+    memberships: { data: rows, error: null },
+    institutions: {
+      data: [{ status: opts.institutionStatus ?? 'activa' }],
+      error: null,
+    },
   };
   const guard = new MembershipGuard(
-    { admin: { from: () => q } } as any,
+    {
+      admin: {
+        from: (t: string) => {
+          const result = results[t] ?? { data: null, error: null };
+          const q: any = {
+            select: () => q,
+            eq: () => q,
+            in: () => q,
+            then: (res: any, rej: any) =>
+              Promise.resolve(result).then(res, rej),
+          };
+          return q;
+        },
+      },
+    } as any,
     new Reflector(),
   );
   return { guard, context, request };
@@ -72,12 +87,14 @@ describe('UsersController', () => {
   let controller: UsersController;
   let service: {
     list: ReturnType<typeof vi.fn>;
+    detail: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     service = {
       list: vi.fn(),
+      detail: vi.fn(),
       create: vi.fn(),
     };
     const module = await Test.createTestingModule({
@@ -104,6 +121,7 @@ describe('UsersController', () => {
   describe('restricción de acceso', () => {
     for (const [name, handler] of [
       ['GET /users', 'list'],
+      ['GET /users/:userId', 'detail'],
       ['POST /users', 'create'],
     ] as const) {
       it(`${name}: sin token → 401`, async () => {
@@ -138,6 +156,18 @@ describe('UsersController', () => {
           await expect(guard.canActivate(context)).resolves.toBe(true);
         }
       });
+
+      it(`${name}: institución suspendida → 403`, async () => {
+        const { guard, context } = membershipGuardContext(
+          controller[handler],
+          { role: 'admin', institutionStatus: 'suspendida' },
+        );
+        const attempt = guard.canActivate(context);
+        await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+        await expect(attempt).rejects.toThrow(
+          'Sin acceso: institución suspendida',
+        );
+      });
     }
   });
 
@@ -154,6 +184,15 @@ describe('UsersController', () => {
       page: 2,
       limit: 10,
     });
+  });
+
+  it('GET /users/:userId delega en el service', async () => {
+    service.detail.mockResolvedValue({ userId: 'u1', role: 'teacher' });
+    await expect(controller.detail(membership, M1)).resolves.toEqual({
+      userId: 'u1',
+      role: 'teacher',
+    });
+    expect(service.detail).toHaveBeenCalledWith(membership, M1);
   });
 
   it('POST /users delega en el service', async () => {

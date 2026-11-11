@@ -118,7 +118,14 @@ export interface TeacherCandidate {
   status: string;
   weeklyHours: number;
   maxWeeklyHours: number;
+  /**
+   * Choque de bloque horario con la materia/curso a asignar, formateado
+   * "Materia · Curso · Día Horario"; null si no hay choque. Los avisos de
+   * estado o límite de horas los deriva el cliente desde status,
+   * weeklyHours y maxWeeklyHours.
+   */
   conflict: string | null;
+  scheduleConflict: string | null;
 }
 
 export interface AssignedSubject {
@@ -188,6 +195,14 @@ const INACTIVE_TEACHER_MSG = 'No se puede asignar un docente inactivo';
 const OVER_HOURS_MSG =
   'El docente supera su límite de horas semanales con esta asignación';
 const ALREADY_MEMBER_MSG = 'El docente ya es miembro de esta institución';
+
+const DAY_NAMES: Record<number, string> = {
+  1: 'Lunes',
+  2: 'Martes',
+  3: 'Miércoles',
+  4: 'Jueves',
+  5: 'Viernes',
+};
 
 const TEACHER_COLUMNS =
   'id, user_id, file_number, employment_status, status, max_weekly_hours, hired_at, created_at, profiles!inner(full_name, phone, dni, address)';
@@ -536,9 +551,11 @@ export class TeachersService {
 
   /**
    * Docentes candidatos para una asignación: todos los docentes de la
-   * institución con su carga horaria actual, su límite y el conflicto que
-   * impediría asignarlos (inactivo, de licencia o sin horas disponibles
-   * para la materia indicada).
+   * institución con su estado, carga horaria actual y límite (con esos
+   * datos el cliente deriva los avisos de inactivo, licencia u horas).
+   * `conflict`/`scheduleConflict` reportan exclusivamente el choque de
+   * bloque horario con la materia o curso a asignar, formateado
+   * "Materia · Curso · Día Horario"; null si no hay choque.
    */
   async candidates(
     membership: Membership,
@@ -549,10 +566,9 @@ export class TeachersService {
     const institutionId = membership.institutionId;
 
     if (courseId) await this.courseFor(membership, courseId);
-    let subjectHours = 0;
+    let subject: any = null;
     if (subjectId) {
-      const subject = await this.subjectFor(membership, subjectId);
-      subjectHours = weeklyHoursOf(subject);
+      subject = await this.subjectFor(membership, subjectId);
     }
 
     const activeYear = await this.activeSchoolYear(institutionId);
@@ -570,28 +586,27 @@ export class TeachersService {
       rows.map((r: any) => r.id as string),
       activeYear,
     );
+    const targetBlocks = await this.scheduleBlocksFor(
+      courseId ?? (subject?.course_id as string | undefined),
+      subjectId,
+    );
 
     return rows.map((r: any) => {
       const profile = profileOf(r);
-      const status = r.status ?? 'activo';
-      const weeklyHours = (subjectsByTeacher.get(r.id) ?? []).reduce(
+      const subjects = subjectsByTeacher.get(r.id) ?? [];
+      const weeklyHours = subjects.reduce(
         (a: number, s: any) => a + weeklyHoursOf(s),
         0,
       );
-      const maxWeeklyHours = r.max_weekly_hours ?? DEFAULT_MAX_WEEKLY_HOURS;
-      let conflict: string | null = null;
-      if (status === 'inactivo') conflict = 'El docente está inactivo';
-      else if (status === 'licencia') conflict = 'El docente está de licencia';
-      else if (weeklyHours + subjectHours > maxWeeklyHours) {
-        conflict = 'Supera el límite de horas semanales';
-      }
+      const scheduleConflict = scheduleConflictOf(subjects, targetBlocks);
       return {
         id: r.id,
         fullName: profile?.full_name ?? '',
-        status,
+        status: r.status ?? 'activo',
         weeklyHours,
-        maxWeeklyHours,
-        conflict,
+        maxWeeklyHours: r.max_weekly_hours ?? DEFAULT_MAX_WEEKLY_HOURS,
+        conflict: scheduleConflict,
+        scheduleConflict,
       };
     });
   }
@@ -1171,6 +1186,30 @@ export class TeachersService {
       map.set(s.teacher_membership_id, list);
     }
     return map;
+  }
+
+  /**
+   * Bloques horarios que ocupan las materias del curso indicado, con la
+   * misma derivación cíclica que la grilla docente (scheduleFrom). Si se
+   * pasa `subjectId` se devuelve solo el bloque de esa materia.
+   */
+  private async scheduleBlocksFor(
+    courseId: string | undefined,
+    subjectId?: string,
+  ): Promise<{ subjectId: string; day: number; start: string; end: string }[]> {
+    if (!courseId) return [];
+    const { data, error } = await this.supabase.admin
+      .from('subjects')
+      .select('id')
+      .eq('course_id', courseId)
+      .order('name');
+    if (error) throw error;
+    return (data ?? [])
+      .map((s: any, i: number) => ({
+        subjectId: s.id as string,
+        ...slotFor(i),
+      }))
+      .filter((b) => !subjectId || b.subjectId === subjectId);
   }
 
   /** Alumnos activos de la institución cursando en los cursos dados. */
@@ -1850,28 +1889,59 @@ function seniorityFrom(
 }
 
 /**
+ * Bloque horario de una materia por su posición en la lista ordenada:
+ * días de lunes (1) a viernes (5) ciclando y horas corridas desde las
+ * 08:00 (no existe tabla de horarios).
+ */
+function slotFor(index: number): { day: number; start: string; end: string } {
+  const day = (index % 5) + 1;
+  const hour = 8 + Math.floor(index / 5);
+  const hh = String(hour).padStart(2, '0');
+  return {
+    day,
+    start: `${hh}:00`,
+    end: `${String(hour + 1).padStart(2, '0')}:00`,
+  };
+}
+
+/**
  * Grilla semanal derivada de las materias del docente (no existe tabla de
  * horarios): cada materia ocupa un bloque de una hora, distribuidas
  * cíclicamente de lunes (1) a viernes (5) a partir de las 08:00.
  */
 function scheduleFrom(subjects: any[]): TeacherScheduleEntry[] {
-  const slotsByDay = new Map<number, number>();
   return subjects.map((s, i) => {
-    const day = (i % 5) + 1;
-    const slot = slotsByDay.get(day) ?? 0;
-    slotsByDay.set(day, slot + 1);
-    const hour = 8 + slot;
-    const hh = String(hour).padStart(2, '0');
     const course = mapCourse(s.courses);
     return {
-      day,
-      start: `${hh}:00`,
-      end: `${String(hour + 1).padStart(2, '0')}:00`,
+      ...slotFor(i),
       subjectId: s.id,
       subjectName: s.name,
       courseName: course?.name ?? null,
     };
   });
+}
+
+/**
+ * Choque de bloque horario entre la grilla del docente y los bloques que
+ * ocuparía la materia/curso a asignar. Devuelve la primera materia propia
+ * que pisa el mismo día y horario, formateada
+ * "Materia · Curso · Día Horario"; null si no hay choque.
+ */
+function scheduleConflictOf(
+  subjects: any[],
+  targetBlocks: { subjectId: string; day: number; start: string }[],
+): string | null {
+  if (!targetBlocks.length) return null;
+  const targetSlots = new Set(targetBlocks.map((b) => `${b.day}|${b.start}`));
+  const targetIds = new Set(targetBlocks.map((b) => b.subjectId));
+  const clash = scheduleFrom(subjects).find(
+    (e) => targetSlots.has(`${e.day}|${e.start}`) && !targetIds.has(e.subjectId),
+  );
+  if (!clash) return null;
+  const when = `${DAY_NAMES[clash.day] ?? `Día ${clash.day}`} ${clash.start}-${clash.end}`;
+  return [clash.subjectName, clash.courseName, when]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** Parser CSV mínimo con soporte de comillas y separador coma/punto y coma. */
