@@ -5,7 +5,6 @@ import {
   IsEmail,
   IsInt,
   IsNotEmpty,
-  IsObject,
   IsOptional,
   IsString,
   Max,
@@ -92,11 +91,14 @@ export class UpdateInstitutionDto {
   @MaxLength(60, { each: true })
   levels?: string[];
 
-  /** Grilla de horarios de la institución (estructura libre en JSONB). */
+  /**
+   * Grilla de horarios de la institución (estructura libre en JSONB).
+   * Acepta el objeto o el texto "HH:MM – HH:MM" que envía el Front;
+   * la validación de forma la hace el servicio.
+   */
   @IsOptional()
   @nullable()
-  @IsObject()
-  schedule?: Record<string, unknown> | null;
+  schedule?: Record<string, unknown> | string | null;
 
   @IsOptional()
   @IsBoolean()

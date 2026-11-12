@@ -196,6 +196,50 @@ describe('InstitutionService · update', () => {
     );
     expect(state.institutions?.calls ?? []).toEqual([]);
   });
+
+  it('schedule como texto "HH:MM – HH:MM" → se guarda { start, end }', async () => {
+    const { svc, state } = service({
+      institutions: [{ data: institutionRow, error: null }],
+    });
+    await svc.update(admin, { schedule: '07:30 – 17:30' });
+    expect(
+      state.institutions.calls.find((c) => c.op === 'update')?.args[0],
+    ).toMatchObject({ schedule: { start: '07:30', end: '17:30' } });
+  });
+
+  it.each(['07:30-17:30', '7:30 – 17:30', '07:30 — 17:30'])(
+    'schedule texto válido "%s" → persiste',
+    async (schedule) => {
+      const { svc, state } = service({
+        institutions: [{ data: institutionRow, error: null }],
+      });
+      await svc.update(admin, { schedule });
+      expect(
+        state.institutions.calls.find((c) => c.op === 'update')?.args[0],
+      ).toMatchObject({ schedule: { start: '07:30', end: '17:30' } });
+    },
+  );
+
+  it.each(['7 a 17', 'mañana', 42, ['07:30', '17:30']])(
+    'schedule inválido %j → 400 y no escribe',
+    async (schedule) => {
+      const { svc, state } = service({});
+      await expect(
+        svc.update(admin, { schedule: schedule as any }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(state.institutions?.calls ?? []).toEqual([]);
+    },
+  );
+
+  it('schedule objeto libre → se persiste tal cual', async () => {
+    const { svc, state } = service({
+      institutions: [{ data: institutionRow, error: null }],
+    });
+    await svc.update(admin, { schedule: { morning: '8-12' } });
+    expect(
+      state.institutions.calls.find((c) => c.op === 'update')?.args[0],
+    ).toMatchObject({ schedule: { morning: '8-12' } });
+  });
 });
 
 describe('InstitutionService · get (GET /institution)', () => {
@@ -248,6 +292,23 @@ describe('InstitutionService · get (GET /institution)', () => {
     expect(state.institutions.calls).toContainEqual({
       op: 'eq',
       args: ['id', INST],
+    });
+  });
+
+  it('schedule { start, end } → responde texto "HH:MM – HH:MM"', async () => {
+    const { svc } = service({
+      institutions: [
+        {
+          data: {
+            ...institutionRow,
+            schedule: { start: '07:30', end: '17:30' },
+          },
+          error: null,
+        },
+      ],
+    });
+    await expect(svc.get(admin)).resolves.toMatchObject({
+      schedule: '07:30 – 17:30',
     });
   });
 

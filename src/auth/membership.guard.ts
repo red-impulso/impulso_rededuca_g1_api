@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { SupabaseService } from '../supabase/supabase.service.js';
+import { ACTIVE_MEMBERSHIP_STATUSES } from '../modules/memberships/memberships.constants.js';
 import type { AuthenticatedRequest } from './auth.guard.js';
 import { ROLES_KEY, type Role } from './roles.decorator.js';
 
@@ -56,11 +57,21 @@ export class MembershipGuard implements CanActivate {
 
     const { data: rows, error } = await this.supabase.admin
       .from('memberships')
-      .select('id, user_id, institution_id, role')
+      .select('id, user_id, institution_id, role, status')
       .eq('user_id', user.id)
       .eq('institution_id', institutionId);
     if (error) throw error;
     if (!rows?.length) throw new ForbiddenException();
+
+    // Solo membresías vigentes: las filas sin estado (legado) se aceptan
+    // y los estados laborales heredados ('activo', 'licencia') cuentan
+    // como vigentes igual que 'active'.
+    const activeRows = rows.filter(
+      (r: { status?: string | null }) =>
+        !r.status ||
+        (ACTIVE_MEMBERSHIP_STATUSES as readonly string[]).includes(r.status),
+    );
+    if (!activeRows.length) throw new ForbiddenException();
 
     const instResult = (await this.supabase.admin
       .from('institutions')
@@ -77,7 +88,7 @@ export class MembershipGuard implements CanActivate {
       throw new ForbiddenException('Sin acceso: institución suspendida');
     }
 
-    const row = rows.reduce((a: any, b: any) =>
+    const row = activeRows.reduce((a: any, b: any) =>
       ROLE_RANK[b.role as Role] < ROLE_RANK[a.role as Role] ? b : a,
     );
 

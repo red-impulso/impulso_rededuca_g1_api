@@ -22,7 +22,7 @@ export interface InstitutionItem {
   logoUrl: string | null;
   schoolYear: number;
   levels: string[];
-  schedule: Record<string, unknown> | null;
+  schedule: Record<string, unknown> | string | null;
   familyCommunications: boolean;
   dailyAttendance: boolean;
   status: string;
@@ -190,13 +190,7 @@ export class InstitutionService {
         .filter(Boolean);
     }
     if (dto?.schedule !== undefined) {
-      if (
-        dto.schedule !== null &&
-        (typeof dto.schedule !== 'object' || Array.isArray(dto.schedule))
-      ) {
-        throw new BadRequestException('schedule debe ser un objeto JSON');
-      }
-      patch.schedule = dto.schedule;
+      patch.schedule = normalizeSchedule(dto.schedule);
     }
     if (dto?.familyCommunications !== undefined) {
       patch.family_communications = dto.familyCommunications;
@@ -214,6 +208,55 @@ export class InstitutionService {
   }
 }
 
+const SCHEDULE_TEXT_RE = /(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})/;
+
+const SCHEDULE_BAD_REQUEST =
+  'schedule debe ser un objeto JSON o un horario "HH:MM – HH:MM"';
+
+/**
+ * El Front envía el horario como texto "07:30 – 17:30" y el JSONB lo
+ * guarda como { start, end }; también se acepta un objeto libre.
+ */
+function normalizeSchedule(
+  schedule: Record<string, unknown> | string | null,
+): Record<string, unknown> | null {
+  if (schedule === null) return null;
+  if (typeof schedule === 'string') {
+    const match = schedule.trim().match(SCHEDULE_TEXT_RE);
+    if (!match) throw new BadRequestException(SCHEDULE_BAD_REQUEST);
+    const [, sh, sm, eh, em] = match;
+    if (+sh > 23 || +eh > 23 || +sm > 59 || +em > 59) {
+      throw new BadRequestException(SCHEDULE_BAD_REQUEST);
+    }
+    return {
+      start: `${sh.padStart(2, '0')}:${sm}`,
+      end: `${eh.padStart(2, '0')}:${em}`,
+    };
+  }
+  if (typeof schedule !== 'object' || Array.isArray(schedule)) {
+    throw new BadRequestException(SCHEDULE_BAD_REQUEST);
+  }
+  return schedule;
+}
+
+/**
+ * El Front muestra el horario como texto: los objetos { start, end }
+ * viajan como "HH:MM – HH:MM"; el resto de las formas JSONB pasa igual.
+ */
+function scheduleToText(
+  schedule: unknown,
+): Record<string, unknown> | string | null {
+  if (typeof schedule === 'string') return schedule || null;
+  if (schedule && typeof schedule === 'object' && !Array.isArray(schedule)) {
+    const { start, end } = schedule as Record<string, unknown>;
+    if (typeof start === 'string' && typeof end === 'string') {
+      return `${start} – ${end}`;
+    }
+    return schedule as Record<string, unknown>;
+  }
+  return null;
+}
+
 function mapInstitution(r: any): InstitutionItem {
   return {
     id: r.id,
@@ -229,7 +272,7 @@ function mapInstitution(r: any): InstitutionItem {
     logoUrl: r.logo_url ?? null,
     schoolYear: r.school_year ?? null,
     levels: r.levels ?? [],
-    schedule: r.schedule ?? null,
+    schedule: scheduleToText(r.schedule),
     familyCommunications: r.family_communications ?? true,
     dailyAttendance: r.daily_attendance ?? true,
     status: r.status ?? 'activa',
