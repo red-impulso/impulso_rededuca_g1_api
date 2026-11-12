@@ -161,4 +161,26 @@ describe('MembershipGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(request.membership.role).toBe('admin');
   });
+
+  it.each(['blocked', 'inactive', 'pending'])(
+    'membresía %s → 403',
+    async (status) => {
+      const { guard, context } = setup([
+        { ...membershipRow('m1', 'admin'), status },
+      ]);
+      await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    },
+  );
+
+  it('si la membresía activa no es la de mayor rango, usa la vigente', async () => {
+    const { guard, context, request } = setup([
+      { ...membershipRow('m1', 'admin'), status: 'blocked' },
+      { ...membershipRow('m2', 'teacher'), status: 'active' },
+    ]);
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.membership.id).toBe('m2');
+    expect(request.membership.role).toBe('teacher');
+  });
 });
